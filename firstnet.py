@@ -6,23 +6,23 @@ from blocks.bricks import MLP, Rectifier, Softmax
 from blocks.initialization import IsotropicGaussian, Constant
 from blocks.bricks.cost import MisclassificationRate
 from blocks.graph import ComputationGraph
-from blocks.bricks.conv import ConvolutionalLayer, ConvolutionalSequence
+from blocks.bricks.conv import ConvolutionalActivation, ConvolutionalLayer, ConvolutionalSequence
 from blocks.bricks.conv import Flattener
 from blocks.filter import VariableFilter
 from blocks.roles import WEIGHT, FILTER
 
-
 # blocks model training
 from blocks.main_loop import MainLoop
 from blocks.model import Model
-from blocks.algorithms import GradientDescent, Scale
-from blocks.extensions.monitoring import DataStreamMonitoring
-from blocks.extensions import FinishAfter, Printing, ProgressBar
+from blocks.algorithms import GradientDescent, Adam
+from blocks.extensions.monitoring import DataStreamMonitoring, TrainingDataMonitoring
+from blocks.extensions import Printing, ProgressBar
 
 # fuel
-from fuel.datasets import MNIST
+from fuel.datasets import CIFAR10
 from fuel.streams import DataStream
 from fuel.schemes import SequentialScheme
+from extensions import ExperimentSaver
 
 def main():
     # # # # # # # # # # # 
@@ -32,17 +32,21 @@ def main():
     # ConvOp requires input be a 4D tensor
     x = tensor.tensor4("features")
 
-    y = tensor.lmatrix("targets")
+    y = tensor.ivector("targets")
 
     # Convolutional Layers
     # ====================
     conv_layers = [
-          ConvolutionalLayer(Rectifier().apply, (5,5), 16, (2,2), name='l1')
-        , ConvolutionalLayer(Rectifier().apply, (5,5), 32, (2,2), name='l2')
+        # ConvolutionalLayer(activiation, filter_size, num_filters, pooling_size, name)
+          ConvolutionalLayer(Rectifier().apply, (5,5), 64, (2,2), border_mode='full', name='l1')
+        , ConvolutionalLayer(Rectifier().apply, (3,3), 128, (2,2), border_mode='full', name='l2')
+        , ConvolutionalActivation(Rectifier().apply, (3,3), 256, name='l3')
+        , ConvolutionalLayer(Rectifier().apply, (3,3), 256, (2,2), name='l4')
+        # , ConvolutionalLayer(Rectifier().apply, (3,3), 128, (2,2), name='l4')
         ]
     
     convnet = ConvolutionalSequence(
-        conv_layers, num_channels=1, image_size=(28,28),
+        conv_layers, num_channels=3, image_size=(32,32),
         weights_init=IsotropicGaussian(0.1),
         biases_init=Constant(0)
         )
@@ -52,21 +56,22 @@ def main():
 
     # Fully Connected Layers
     # ======================
+    conv_features = convnet.apply(x)
+    features = Flattener().apply(conv_features)
 
-    features = Flattener().apply(convnet.apply(x))
-
-    mlp = MLP(  activations=[Rectifier(), None]
-              , dims=[output_dim, 100, 10]
+    mlp = MLP(  activations=[Rectifier()]*2+[None]
+              , dims=[output_dim, 256, 256, 10]
               , weights_init=IsotropicGaussian(0.01)
               , biases_init=Constant(0)
         )
     mlp.initialize()
 
     y_hat = mlp.apply(features)
+    # print y_hat.shape.eval({x: np.zeros((1, 3, 32, 32), dtype=theano.config.floatX)})
 
     # Numerically Stable Softmax
-    cost = Softmax().categorical_cross_entropy(y.flatten(), y_hat)
-    error_rate = MisclassificationRate().apply(y.flatten(), y_hat)
+    cost = Softmax().categorical_cross_entropy(y, y_hat)
+    error_rate = MisclassificationRate().apply(y, y_hat)
 
     cg = ComputationGraph(cost)
 
@@ -86,8 +91,8 @@ def main():
     # # # # # # # # # # # 
 
     # Figure out data source
-    train = MNIST("train")
-    test = MNIST("test")
+    train = CIFAR10("train")
+    test = CIFAR10("test")
 
     # Load Data Using Fuel
     train_stream = DataStream.default_stream(
@@ -101,7 +106,7 @@ def main():
     algorithm = GradientDescent(
           cost=cost
         , params=cg.parameters
-        , step_rule=Scale(learning_rate=0.1)
+        , step_rule=Adam(learning_rate=0.0005)
         )
 
     main_loop = MainLoop(
@@ -109,11 +114,15 @@ def main():
         , data_stream=train_stream
         , algorithm=algorithm
         , extensions=[
-              FinishAfter(after_n_epochs=5)
+              TrainingDataMonitoring(
+                  [cost, error_rate]
+                , prefix='train'
+                , after_epoch=True)
             , DataStreamMonitoring(
                   [cost, error_rate]
                 , test_stream,
                   prefix='test')
+            , ExperimentSaver(dest_directory='dest', src_directory='src')
             , Printing()
             , ProgressBar()
             ]
