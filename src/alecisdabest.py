@@ -10,50 +10,54 @@ from fuel.schemes import SequentialScheme
 from foxhound.models import Network
 from foxhound import ops
 from foxhound import iterators
-from foxhound.transforms import OneHot
+from foxhound.transforms import OneHot, ColorShift, Fliplr, Patch, CenterCrop
 from foxhound.theano_utils import floatX
 
 import ipdb
 
 # # FCC
 # model = [
-# 	  ops.Input(['x', 28 * 28])
-# 	, ops.Project(dim=512)
-# 	, ops.Activation('rectify')
-# 	, ops.Project(dim=512)
-# 	, ops.Activation('rectify')
-# 	, ops.Project(dim=10)
-# 	, ops.Activation('softmax')
-# 	]
+#     ops.Input(['x', 28 * 28])
+#   , ops.Project(dim=512)
+#   , ops.Activation('rectify')
+#   , ops.Project(dim=512)
+#   , ops.Activation('rectify')
+#   , ops.Project(dim=10)
+#   , ops.Activation('softmax')
+#   ]
 
-# Conv
+# Network to Network
 model = [
-	  ops.Input(['x', 3, 32, 32])
-	, ops.Conv(64, (3,3))
-	, ops.Activation('rectify')
-	, ops.Conv(64, (3,3))
-	, ops.Activation('rectify')
-	, ops.CUDNNPool((3,3), (2,2), pad=(1,1))
-	, ops.Dropout(.10)
-	, ops.Conv(128, (3,3))
-	, ops.Activation('rectify')
-	, ops.Conv(128, (3,3))
-	, ops.Activation('rectify')
-	, ops.CUDNNPool((3,3), (2,2), pad=(1,1))
-	, ops.Dropout(.15)
-	, ops.Conv(256, (3,3))
-	, ops.Activation('rectify')
-	, ops.Conv(256, (3,3))
-	, ops.Activation('rectify')
-	, ops.CUDNNPool((3,3), (2,2), pad=(1,1))
-	, ops.Dropout(.25)
-	, ops.Flatten(2)
-	, ops.Project(dim=512)
-	, ops.Activation('rectify')
-	, ops.Dropout(0.5)
-	, ops.Project(dim=10)
-	, ops.Activation('softmax')
-	]
+      ops.Input(['x', 3, 28, 28])
+    , ops.Conv(64, (3,3))
+    , ops.Activation('rectify')
+    , ops.Conv(64, (3,3))
+    , ops.Activation('rectify')
+    , ops.CUDNNPool((3,3), (2,2), pad=(1,1))
+    , ops.Dropout(.10)
+    , ops.Conv(128, (3,3))
+    , ops.Activation('rectify')
+    , ops.Conv(128, (3,3))
+    , ops.Activation('rectify')
+    , ops.CUDNNPool((3,3), (2,2), pad=(1,1))
+    , ops.Dropout(.15)
+    , ops.Conv(256, (3,3))
+    , ops.Activation('rectify')
+    , ops.Conv(256, (3,3))
+    , ops.Activation('rectify')
+    , ops.Conv(256, (3,3))
+    , ops.Activation('rectify')
+    , ops.Conv(256, (3,3))
+    , ops.Activation('rectify')
+    , ops.CUDNNPool((3,3), (2,2), pad=(1,1))
+    , ops.Dropout(.25)
+    , ops.Flatten(2)
+    , ops.Project(dim=4096)
+    , ops.Activation('rectify')
+    , ops.Dropout(0.5)
+    , ops.Project(dim=10)
+    , ops.Activation('softmax')
+    ]
 
 
 # # # # # # # # # # # 
@@ -75,22 +79,23 @@ test_stream = DataStream.default_stream(
 train_epoch, test_epoch = [stream.get_epoch_iterator() for stream in [train_stream, test_stream]]
 
 
-# trY transformer
+trXt = lambda x: floatX(ColorShift(Fliplr(Patch(np.asarray(x).transpose(0, 2, 3, 1), 28, 28)))).transpose(0, 3, 1, 2)
+teXt = lambda x: floatX(CenterCrop(np.asarray(x).transpose(0, 2, 3, 1), 28, 28)).transpose(0, 3, 1, 2)
 trYt = lambda y: floatX(OneHot(y, 10))
-iterator = iterators.Linear(trYt=trYt)
+iterator = iterators.Linear(trXt=trXt, teXt=teXt, trYt=trYt)
 
 def misclassification_rate(y_true, y_pred):
-	return 1 - accuracy_score(y_true, y_pred)
+    return 1 - accuracy_score(y_true, y_pred)
 
 def get_entire_stream(epoch_iterator):
-	Xs = []
-	Ys = []
-	for xmb, ymb in epoch_iterator:
-		Xs.append(xmb)
-		Ys.append(ymb)
-	X = np.vstack(Xs)
-	Y = np.hstack(Ys)
-	return X, Y
+    Xs = []
+    Ys = []
+    for xmb, ymb in epoch_iterator:
+        Xs.append(xmb)
+        Ys.append(ymb)
+    X = np.vstack(Xs)
+    Y = np.hstack(Ys)
+    return X, Y
 
 trX, trY = get_entire_stream(train_epoch)
 teX, teY = get_entire_stream(test_epoch) 
