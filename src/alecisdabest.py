@@ -5,7 +5,7 @@ from sklearn.metrics import accuracy_score
 
 from fuel.datasets import CIFAR10
 from fuel.streams import DataStream
-from fuel.schemes import SequentialScheme
+from fuel.schemes import ShuffledScheme
 
 from foxhound.models import Network
 from foxhound import ops
@@ -71,10 +71,10 @@ test = CIFAR10("test")
 # Load Data Using Fuel
 train_stream = DataStream.default_stream(
       dataset=train
-    , iteration_scheme=SequentialScheme(train.num_examples, batch_size=128))
+    , iteration_scheme=ShuffledScheme(train.num_examples, batch_size=128))
 test_stream = DataStream.default_stream(
       dataset=test
-    , iteration_scheme=SequentialScheme(test.num_examples, batch_size=1024))
+    , iteration_scheme=ShuffledScheme(test.num_examples, batch_size=1024))
 
 train_epoch, test_epoch = [stream.get_epoch_iterator() for stream in [train_stream, test_stream]]
 
@@ -86,6 +86,8 @@ iterator = iterators.Linear(trXt=trXt, teXt=teXt, trYt=trYt)
 
 def misclassification_rate(y_true, y_pred):
     return 1 - accuracy_score(y_true, y_pred)
+
+
 
 def get_entire_stream(epoch_iterator):
     Xs = []
