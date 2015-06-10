@@ -59,6 +59,10 @@ while continue_epochs:
     if epoch_count % 10 == 0:
         trYpred = model.predict(trX)
         teYpred = model.predict(teX)
+        trY = trY > .5
+        teY = teY > .5
+        trYpred = trYpred > .5
+        teYpred = teYpred > .5
         train_error = misclassification_rate(trY, trYpred)
         test_error = misclassification_rate(teY, teYpred)
         print "Train Error: ", train_error
