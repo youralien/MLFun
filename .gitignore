@@ -1,2 +1,3 @@
 *.pyc
-dest/
+src/IMDB/aclImdb/
+
