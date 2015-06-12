@@ -20,12 +20,12 @@ def cache_image_features(img_dir, dest_dir):
 
 def cache_train():
 	cache_image_features(
-		  "/home/luke/datasets/coco/train2014/"
+		  "/home/luke/datasets/coco/images/train2014/"
 		, "/home/luke/datasets/coco/features/train2014/")
 
 def cache_valid():
 	cache_image_features(
-		  "/home/luke/datasets/coco/val2014/"
+		  "/home/luke/datasets/coco/images/val2014/"
 		, "/home/luke/datasets/coco/features/val2014/")
 
 if __name__ == '__main__':
