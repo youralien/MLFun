@@ -35,4 +35,4 @@ class FoxyDataStream(object):
 	def get_epoch_iterator(self, as_dict=False):
 
 		for xmb, ymb in self.iterator.iterXY(self.X, self.Y):
-			yield {"X": xmb, "Y": ymb} if as_dict else xmb, ymb
+			yield {"X": xmb, "Y": ymb} if as_dict else (xmb, ymb)
