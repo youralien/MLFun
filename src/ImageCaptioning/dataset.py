@@ -1,6 +1,16 @@
 import os
-from pycocotools.coco import COCO
+import csv
+import ipdb
+
 import numpy as np
+import pandas as pd
+import theano
+
+from fuel import config
+from fuel.transformers import Transformer
+from passage.preprocessing import tokenize
+
+from pycocotools.coco import COCO
 
 dataDir='/home/luke/datasets/coco'
 
@@ -82,8 +92,86 @@ def getCaption(ann):
     """
     return str(ann["caption"])
 
-if __name__ == '__main__':
-    import ipdb
+# Foxhound + Fuel
+class FoxyDataStream(object):
+    """FoxyDataStream attempts to merge the gap between fuel DataStreams and
+    Foxhound iterators.
 
+    The place we will be doing this merge is in the blocks MainLoop. Inserting
+    a FoxyDataStream() in place of a DataStream.default_stream()
+    will suffice.
+
+    (Note)
+    These are broken down into the following common areas
+    - dataset which has (features, targets) or (X, Y)
+    - iteration_scheme (sequential vs shuffling, batch_size)
+    - transforms
+
+    Parameters
+    ----------
+    X: array-like, shape (n_samples, ... )
+        features
+
+    Y: array-like, shape (n_samples,) or (n_samples, n_classes)
+        targets
+
+    iterator: a Foxhound iterator.  The use is jank right now, but always use
+        trXt and trYt as the X and Y transforms respectively
+    """
+
+    def __init__(self, X, Y, iterator, iteration_scheme=None):
+        self.X = X
+        self.Y = Y
+        self.iterator = iterator
+        self.iteration_scheme = iteration_scheme # Compatibility with the blocks mainloop
+
+    def get_epoch_iterator(self, as_dict=False):
+
+        for xmb, ymb in self.iterator.iterXY(self.X, self.Y):
+            yield {"X": xmb, "Y": ymb} if as_dict else (xmb, ymb)
+
+class GloveTransformer(Transformer):
+    glove_folder = "glove"
+    vector_dim = 0
+
+    def __init__(self, glove_file, data_stream):
+        super(GloveTransformer, self).__init__(data_stream)
+        dir_path = os.path.join(config.data_path, self.glove_folder)
+        data_path = os.path.join(dir_path, glove_file)
+        raw = pd.read_csv(data_path, header=None, sep=' ', quoting=csv.QUOTE_NONE, nrows=20000)
+        #raw = pd.read_csv(data_path, nrows=400, header=None, sep=' ', quoting=csv.QUOTE_NONE)
+        keys = raw[0].values
+        self.vectors = raw[range(1, len(raw.columns))].values.astype(theano.config.floatX)
+        self.vector_dim = self.vectors.shape[1]
+        
+        # lookup will have (key, val) -> (word-string, row index in self.vectors)
+        self.lookup = dict(zip(keys, range(self.vectors.shape[0])))
+
+    def get_data(self, request=None):
+        if request is not None:
+            raise ValueError
+
+        # vvv - pretty specific to where your text is located in your datastream 
+        
+        # This worked for Luke's Sentiment Data, where Strings were predicting target sentiment value
+        # strings, target = next(self.child_epoch_iterator)
+
+        # In the case of Image Captioning, below works better.
+        image_reps, strings = next(self.child_epoch_iterator)
+        strings = np.vectorize(str.lower)(strings)
+
+        def process_string(s):
+            tokens = tokenize(s)
+
+            output = np.zeros((len(tokens), self.vector_dim), dtype=theano.config.floatX)
+            for i,t in enumerate(tokens):
+                if t in self.lookup:
+                    output[i, :] = self.vectors[self.lookup[t]]
+            return output
+
+        word_reps = [process_string(s) for s in strings]
+        return image_reps, word_reps
+
+if __name__ == '__main__':
     trX, teX, trY, teY = coco(mode="dev")
     ipdb.set_trace()
