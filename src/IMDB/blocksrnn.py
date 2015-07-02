@@ -43,8 +43,15 @@ y = T.matrix('Y')
 y_hat = s.apply(x)
 
 cost = BinaryCrossEntropy().apply(y, y_hat)
-# error_rate = MisclassificationRate().apply(y, y_hat)
+"""Missclassification rate will calculate the mistake as
 
+mistakes = tensor.neq(y, y_hat.argmax(axis=1))
+
+which assumes that y_hat is shape (n_examples, n_classes).
+This doesn't always work when our y is not one-hotted
+
+# error_rate = MisclassificationRate().apply(y, y_hat)
+"""
 cg = ComputationGraph(cost)
 
 # # # # # # # # # # # 
