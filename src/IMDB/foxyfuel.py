@@ -19,18 +19,18 @@ class FoxyDataStream(object):
 	X: array-like, shape (n_samples, ... )
 		features
 
-	Y: array-like, shape (n_samples, )
+	Y: array-like, shape (n_samples, n_classes)
 		targets
 
 	iterator: a Foxhound iterator.  The use is jank right now, but always use
 		trXt and trYt as the X and Y transforms respectively
 	"""
 
-	def __init__(self, X, Y, iterator):
-
+	def __init__(self, X, Y, iterator, iteration_scheme=None):
 		self.X = X
 		self.Y = Y
 		self.iterator = iterator
+		self.iteration_scheme = iteration_scheme # Compatibility with the blocks mainloop
 
 	def get_epoch_iterator(self, as_dict=False):
 
