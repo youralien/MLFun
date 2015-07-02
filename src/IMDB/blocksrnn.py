@@ -76,7 +76,7 @@ test_stream = FoxyDataStream(teX, teY, test_iterator)
 # Train
 algorithm = GradientDescent(
       cost=cost
-    , params=cg.parameters
+    , parameters=cg.parameters
     , step_rule=AdaDelta()
     )
 main_loop = MainLoop(
