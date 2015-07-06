@@ -8,7 +8,7 @@ import theano
 
 from fuel import config
 from fuel.transformers import Transformer
-from passage.preprocessing import tokenize
+from foxhound.preprocessing import tokenize
 
 from pycocotools.coco import COCO
 
@@ -134,7 +134,7 @@ class GloveTransformer(Transformer):
     glove_folder = "glove"
     vector_dim = 0
 
-    def __init__(self, glove_file, data_stream):
+    def __init__(self, glove_file, data_stream, vectorizer):
         super(GloveTransformer, self).__init__(data_stream)
         dir_path = os.path.join(config.data_path, self.glove_folder)
         data_path = os.path.join(dir_path, glove_file)
@@ -145,18 +145,17 @@ class GloveTransformer(Transformer):
         self.vector_dim = self.vectors.shape[1]
         
         # lookup will have (key, val) -> (word-string, row index in self.vectors)
-        self.lookup = dict(zip(keys, range(self.vectors.shape[0])))
+        row_indexes = range(self.vectors.shape[0])
+        self.lookup = dict(zip(keys, row_indexes))
+        self.reverse_lookup = dict(zip(row_indexes, keys))
+        self.vectorizer = vectorizer
 
     def get_data(self, request=None):
         if request is not None:
             raise ValueError
 
-        # vvv - pretty specific to where your text is located in your datastream 
-        
-        # This worked for Luke's Sentiment Data, where Strings were predicting target sentiment value
-        # strings, target = next(self.child_epoch_iterator)
-
-        # In the case of Image Captioning, below works better.
+        """
+        # If the stream is composed of image_reps, strings
         image_reps, strings = next(self.child_epoch_iterator)
         strings = np.vectorize(str.lower)(strings)
 
@@ -170,6 +169,25 @@ class GloveTransformer(Transformer):
             return output
 
         word_reps = [process_string(s) for s in strings]
+        return image_reps, word_reps
+        """
+
+        # If the stream is composed of image_reps, codes
+        image_reps, codes = next(self.child_epoch_iterator)
+
+        def process_tokens(tokens):
+            output = np.zeros((len(tokens), self.vector_dim), dtype=theano.config.floatX)
+            for i,t in enumerate(tokens):
+                word = self.vectorizer.decoder[t] 
+                if word in self.lookup:
+                    output[i, :] = self.vectors[self.lookup[word]]
+                # else t is UNK or PAD so we leave the output alone (zero padded)
+            return output
+
+        word_reps = np.asarray(
+              [process_tokens(tokens) for tokens in codes.T]
+            , dtype=theano.config.floatX)
+
         return image_reps, word_reps
 
 if __name__ == '__main__':

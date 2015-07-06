@@ -5,7 +5,8 @@ from foxhound.preprocessing import Tokenizer
 from foxhound import ops
 from foxhound import iterators
 from foxhound.theano_utils import floatX, intX
-from foxhound.transforms import SeqPadded, LenClip
+from foxhound.transforms import SeqPadded
+
 
 from dataset import coco, FoxyDataStream, GloveTransformer
 
@@ -16,10 +17,15 @@ from dataset import coco, FoxyDataStream, GloveTransformer
 # # # # # # # # # # #
 trX, teX, trY, teY = coco('dev')
 
+# Word Vectors
+vect = Tokenizer(min_df=1, max_features=1000)
+vect.fit(trY)
+
 # Transforms
 trXt=lambda x: floatX(x)
 teXt=lambda x: floatX(x)
-Yt=lambda y: y
+Yt=lambda y: intX(SeqPadded(vect.transform(y), 'back'))
+# Yt=lambda y: y
 
 # Foxhound Iterators
 train_iterator = iterators.Linear(trXt=trXt, trYt=Yt)
@@ -28,14 +34,20 @@ test_iterator = iterators.Linear(trXt=teXt, trYt=Yt)
 # DataStreams
 train_stream = FoxyDataStream(trX, trY, train_iterator)
 # test_stream = FoxyDataStream(teX, teY, test_iterator)
+
+# image_vects, tokens = train_stream.get_epoch_iterator().next()
+
+# print trY
+# print "\n"
+# print vect.inverse_transform(tokens.T)
 glove_version = "glove.6B.50d.txt.gz"
-transformer = GloveTransformer(glove_version, data_stream=train_stream)
+transformer = GloveTransformer(glove_version, data_stream=train_stream, vectorizer=vect)
 
 """
 image_vects: array-like, shape (n_examples, 4096)
 word_vects: lists of list of lists, shape-ish (n_examples, n_words, embedding dimensionality (50 or 300))
-image_vects, word_vects = transformer.get_epoch_iterator().next()
 """
+image_vects, word_vects = transformer.get_epoch_iterator().next()
 
 # print train_stream.get_epoch_iterator().next()
 # ops = [
