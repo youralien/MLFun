@@ -59,7 +59,7 @@ cg = ComputationGraph(cost)
 # # # # # # # # # # #
 
 # Transforms
-trXt=lambda x: intX(SeqPadded(vect.transform(LenClip(x, 100))))
+trXt=lambda x: intX(SeqPadded(vect.transform(LenClip(x, 1000))))
 teXt=lambda x: intX(SeqPadded(vect.transform(x)))
 Yt=lambda y: floatX(y).reshape(-1, 1)
 
@@ -89,7 +89,7 @@ main_loop = MainLoop(
             , train_stream,
               prefix='train')
         # , DataStreamMonitoring(
-        #       [cost, error_rate]
+        #       [cost]
         #     , test_stream,
         #       prefix='test')
         , Printing()

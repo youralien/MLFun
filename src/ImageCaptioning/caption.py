@@ -30,7 +30,13 @@ train_stream = FoxyDataStream(trX, trY, train_iterator)
 # test_stream = FoxyDataStream(teX, teY, test_iterator)
 glove_version = "glove.6B.50d.txt.gz"
 transformer = GloveTransformer(glove_version, data_stream=train_stream)
+
+"""
+image_vects: array-like, shape (n_examples, 4096)
+word_vects: lists of list of lists, shape-ish (n_examples, n_words, embedding dimensionality (50 or 300))
 image_vects, word_vects = transformer.get_epoch_iterator().next()
+"""
+
 # print train_stream.get_epoch_iterator().next()
 # ops = [
 # 	# time dimension,

@@ -19,7 +19,7 @@ class FoxyDataStream(object):
 	X: array-like, shape (n_samples, ... )
 		features
 
-	Y: array-like, shape (n_samples, n_classes)
+	Y: array-like, shape (n_samples,) or (n_samples, n_classes)
 		targets
 
 	iterator: a Foxhound iterator.  The use is jank right now, but always use
