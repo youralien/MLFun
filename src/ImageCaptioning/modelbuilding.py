@@ -41,7 +41,7 @@ class Encoder(Initializable):
                         , self.transition
                         ]
 
-    @application(inputs=['image_vects', 'word_vects'], outputs=['x', 'v'])   
+    @application(inputs=['image_vects', 'word_vects'], outputs=['image_embedding', 'sentence_embedding'])   
     def apply(self, image_vects, word_vects):
         
         image_embedding = self.image_embedding.apply(image_vects)
@@ -49,7 +49,8 @@ class Encoder(Initializable):
         inputs = self.to_inputs.apply(word_vects)
         hidden, cells = self.transition.apply(inputs=inputs, mask=None)
 
-        return image_embedding, hidden
+        sentence_embedding = hidden[-1]
+        return image_embedding, sentence_embedding
 
 @add_metaclass(ABCMeta)
 class PairwiseCost(Brick):
@@ -93,10 +94,11 @@ class PairwiseRanking(PairwiseCostMatrix):
         return cost
 
 def cos_sim(x, v):
-    scaled_x = x / tensor.nlinalg.norm(x, ord=None)
-    scaled_v = v / tensor.nlinalg.norm(x, ord=None)
-    cosine_similarity = tensor.dot(scaled_x, scaled_v)
-    return cosine_similarity
+    # scaled_x = x / tensor.nlinalg.norm(x, ord=1)
+    # scaled_v = v / tensor.nlinalg.norm(x, ord=1)
+    # cosine_similarity = tensor.dot(scaled_x, scaled_v)
+    # return cosine_similarity
+    return tensor.dot(x, v)
 
 if __name__ == '__main__':
     import theano.tensor as T
@@ -110,4 +112,5 @@ if __name__ == '__main__':
 
     image_vects = T.matrix('image_vects')
     word_vects = T.tensor3('word_vects')
-    x, v = s.apply(image_vects, word_vects)
+    X, V = s.apply(image_vects, word_vects)
+

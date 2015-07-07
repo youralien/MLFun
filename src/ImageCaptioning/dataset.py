@@ -8,8 +8,6 @@ import theano
 
 from fuel import config
 from fuel.transformers import Transformer
-from foxhound.preprocessing import tokenize
-
 from pycocotools.coco import COCO
 
 dataDir='/home/luke/datasets/coco'
@@ -109,32 +107,24 @@ class FoxyDataStream(object):
 
     Parameters
     ----------
-    X: array-like, shape (n_samples, ... )
-        features
+    data: tuple of X, Y
 
-    Y: array-like, shape (n_samples,) or (n_samples, n_classes)
-        targets
-
-    sourceX: string name of the corresponding variable
-
-    sourceY: string name of the corresponding variable
+    sources: tuple of sourcenameX, sourcenameY
 
     iterator: a Foxhound iterator.  The use is jank right now, but always use
         trXt and trYt as the X and Y transforms respectively
     """
 
-    def __init__(self, X, Y, sourceX, sourceY, iterator, iteration_scheme=None):
-        self.X = X
-        self.Y = Y
-        self.sourceX = sourceX
-        self.sourceY = sourceY
+    def __init__(self, data, sources, iterator, iteration_scheme=None):
+        self.data = data
+        self.sources = sources
         self.iterator = iterator
         self.iteration_scheme = iteration_scheme # Compatibility with the blocks mainloop
 
     def get_epoch_iterator(self, as_dict=False):
 
-        for xmb, ymb in self.iterator.iterXY(self.X, self.Y):
-            yield {self.sourceX: xmb, self.sourceY: ymb} if as_dict else (xmb, ymb)
+        for datamb in self.iterator.iterXY(*self.data):
+            yield dict(zip(self.sources, datamb)) if as_dict else datamb
 
 class GloveTransformer(Transformer):
     glove_folder = "glove"
