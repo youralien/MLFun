@@ -115,20 +115,26 @@ class FoxyDataStream(object):
     Y: array-like, shape (n_samples,) or (n_samples, n_classes)
         targets
 
+    sourceX: string name of the corresponding variable
+
+    sourceY: string name of the corresponding variable
+
     iterator: a Foxhound iterator.  The use is jank right now, but always use
         trXt and trYt as the X and Y transforms respectively
     """
 
-    def __init__(self, X, Y, iterator, iteration_scheme=None):
+    def __init__(self, X, Y, sourceX, sourceY, iterator, iteration_scheme=None):
         self.X = X
         self.Y = Y
+        self.sourceX = sourceX
+        self.sourceY = sourceY
         self.iterator = iterator
         self.iteration_scheme = iteration_scheme # Compatibility with the blocks mainloop
 
     def get_epoch_iterator(self, as_dict=False):
 
         for xmb, ymb in self.iterator.iterXY(self.X, self.Y):
-            yield {"X": xmb, "Y": ymb} if as_dict else (xmb, ymb)
+            yield {self.sourceX: xmb, self.sourceY: ymb} if as_dict else (xmb, ymb)
 
 class GloveTransformer(Transformer):
     glove_folder = "glove"
