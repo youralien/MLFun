@@ -38,8 +38,8 @@ s = Sentiment(
 		)
 s.initialize()
 
-x = T.imatrix('X')
-y = T.matrix('Y')
+x = T.imatrix('X') # very important these variables match the source names 
+y = T.matrix('Y') # very important these variables match the source names
 y_hat = s.apply(x)
 
 cost = BinaryCrossEntropy().apply(y, y_hat)
