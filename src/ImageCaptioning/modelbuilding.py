@@ -94,11 +94,11 @@ class PairwiseRanking(PairwiseCostMatrix):
         return cost
 
 def cos_sim(x, v):
-    # scaled_x = x / tensor.nlinalg.norm(x, ord=1)
-    # scaled_v = v / tensor.nlinalg.norm(x, ord=1)
-    # cosine_similarity = tensor.dot(scaled_x, scaled_v)
-    # return cosine_similarity
-    return tensor.dot(x, v)
+    scaled_x = x / tensor.nlinalg.norm(x, ord=1)
+    scaled_v = v / tensor.nlinalg.norm(x, ord=1)
+    cosine_similarity = tensor.dot(scaled_x, scaled_v)
+    return cosine_similarity
+    # return tensor.dot(x, v)
 
 if __name__ == '__main__':
     import theano.tensor as T
