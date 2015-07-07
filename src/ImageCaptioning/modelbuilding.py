@@ -49,7 +49,9 @@ class Encoder(Initializable):
         inputs = self.to_inputs.apply(word_vects)
         hidden, cells = self.transition.apply(inputs=inputs, mask=None)
 
+        # the last hidden state represents the accumulation of all the words (i.e. the sentence)
         sentence_embedding = hidden[-1]
+
         return image_embedding, sentence_embedding
 
 @add_metaclass(ABCMeta)
@@ -90,15 +92,20 @@ class PairwiseRanking(PairwiseCostMatrix):
             self.alpha - cos_sim(v, x) + cos_sim(v, x_k)
             , 0
             )
-        cost = x_cost + v_cost
+
+        # cannot be broadcasted together if not transposed
+        cost = x_cost + v_cost.T
+
         return cost
 
 def cos_sim(x, v):
     scaled_x = x / tensor.nlinalg.norm(x, ord=1)
     scaled_v = v / tensor.nlinalg.norm(x, ord=1)
-    cosine_similarity = tensor.dot(scaled_x, scaled_v)
+
+    # cannot be dotted together if not transposed
+    cosine_similarity = tensor.dot(scaled_x, scaled_v.T)
+
     return cosine_similarity
-    # return tensor.dot(x, v)
 
 if __name__ == '__main__':
     import theano.tensor as T

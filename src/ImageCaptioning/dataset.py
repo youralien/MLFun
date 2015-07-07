@@ -20,7 +20,7 @@ def coco(mode="dev"):
 
     # reduce it to a dev set
     if mode == "dev":
-        train_fns = train_fns[:50]
+        train_fns = train_fns[:100]
     trX, trY = loadFeaturesTargets(train_fns, dataType)
     
     # val_fns
