@@ -1,13 +1,27 @@
-import ipdb
+# scientific python
+from theano import tensor as T
 
-from foxhound.models import Network
+# blocks model building
+from blocks.initialization import IsotropicGaussian, Constant
+from blocks.graph import ComputationGraph
+
+# blocks model training
+from blocks.main_loop import MainLoop
+from blocks.model import Model
+from blocks.algorithms import GradientDescent, AdaDelta
+from blocks.extensions.monitoring import DataStreamMonitoring
+from blocks.extensions import Printing, ProgressBar
+
+from fuel.transformers import Merge
+
+# foxhound
 from foxhound.preprocessing import Tokenizer
-from foxhound import ops
 from foxhound import iterators
 from foxhound.theano_utils import floatX, intX
 from foxhound.transforms import SeqPadded
 
-
+# local imports
+from modelbuilding import Encoder, PairwiseRanking
 from dataset import coco, FoxyDataStream, GloveTransformer
 
 
@@ -27,87 +41,81 @@ teXt=lambda x: floatX(x)
 Yt=lambda y: intX(SeqPadded(vect.transform(y), 'back'))
 # Yt=lambda y: y
 
+
 # Foxhound Iterators
-train_iterator = iterators.Linear(trXt=trXt, trYt=Yt)
-test_iterator = iterators.Linear(trXt=teXt, trYt=Yt)
+train_iterator = iterators.Linear(trXt=trXt, trYt=Yt, shuffle=True)
+test_iterator = iterators.Linear(trXt=teXt, trYt=Yt, shuffle=True)
+
+# the batch will be shuffled differently than the train_iterator, which is ideal.
+contrastive_iterator = iterators.Linear(trXt=trXt, trYt=Yt, shuffle=True)
+
 
 # DataStreams
-train_stream = FoxyDataStream(trX, trY, train_iterator)
-# test_stream = FoxyDataStream(teX, teY, test_iterator)
-
+train_stream = FoxyDataStream((trX, trY), ("image_vects", "word_vects"), train_iterator)
+test_stream = FoxyDataStream((teX, teY), ("image_vects", "word_vects"), test_iterator)
+# contrastive_stream = FoxyDataStream(trX, trY, "image_vects_k", "word_vects_k", contrastive_iterator)
+# stream = Merge((train_stream, test_stream), ("image_vects", "word_vects", "image_vects_k", "word_vects_k"))
 # image_vects, tokens = train_stream.get_epoch_iterator().next()
 
 # print trY
 # print "\n"
 # print vect.inverse_transform(tokens.T)
-glove_version = "glove.6B.50d.txt.gz"
-transformer = GloveTransformer(glove_version, data_stream=train_stream, vectorizer=vect)
 
+# embedding_dim = K.  50 or 300
+embedding_dim = 50
+
+glove_version = "glove.6B.%sd.txt.gz" % embedding_dim
+train_transformer = GloveTransformer(glove_version, data_stream=train_stream, vectorizer=vect)
+test_transformer = GloveTransformer(glove_version, data_stream=test_stream, vectorizer=vect)
+# contrastive_transformer = GloveTransformer(glove_version, data_stream=contrastive_stream, vectorizer=vect)
 """
 image_vects: array-like, shape (n_examples, 4096)
 word_vects: lists of list of lists, shape-ish (n_examples, n_words, embedding dimensionality (50 or 300))
-"""
 image_vects, word_vects = transformer.get_epoch_iterator().next()
+"""
 
-# print train_stream.get_epoch_iterator().next()
-# ops = [
-# 	# time dimension,
-# 	  ops.Input(4096, dtype='float32') # EasyNet Image Features
-#     , ops.GRU(512)
-# 	, ops.GRU(512)
-# 	, ops.Slice() # Kinda like Flatten (Conv -> Fully Connected)==(GRU -> Fully Connected)
-# 	, ops.Project(128)
-# 	, ops.Activation('rectify')
-# 	, ops.Project(Length of Bag Of Words)
-# 	, ops.Activation('softmax')
-# ]
+s = Encoder(
+          image_feature_dim=4096
+        , embedding_dim=embedding_dim
+        , biases_init=Constant(0.)
+        , weights_init=IsotropicGaussian(0.02)
+        )
+s.initialize()
 
+image_vects = T.matrix('image_vects') # named to match the source name
+word_vects = T.tensor3('word_vects') # named to match the source name
+# image_vects_k = T.matrix('image_vects_k') # named to match the contrastive source name
+# word_vects_k = T.tensor3('word_vects_k') # named to match the contrastive source name
 
-# iterator = iterators.linear(
-#       trXt=lambda x: floatX(x)
-#     , teXt=lambda x: floatX(x)
-#     , trYt = lambda y: floatX(OneHot(SeqPadded(vect.transform(y), 'back'), Length Of Bag of Words))
-#     )
+# x is image_embedding matrix, v is the hidden states representing the sentences
+X, V = s.apply(image_vects, word_vects)
+# X_k, V_k = s.apply(image_vects_k, word_vects_k)
 
+cost = PairwiseRanking(alpha=0.2).apply(X, V, X, V)
 
-# # iterator = iterators.linear(
-# #       trxt=lambda x: intX(seqpadded(vect.transform(x), 'back'))
-# #     , text=lambda x: intX(seqpadded(vect.transform(x), 'back'))
-# #     , tryt=lambda y: floatx(y).reshape(-1, 1)
-# # 	)
+cg = ComputationGraph(cost)
 
-# # Learn and Predict
-# model = Network(ops, iterator=iterator)
-
-# # Keep Running For Infinite Iterations Until a Keyboard Interrupt
-# continue_epochs = True
-# min_cost_delta = .00001
-# min_cost = .001
-# cost0, cost1 = None, None
-# epoch_count = 0
-
-# while continue_epochs:
-#     ipdb.set_trace()
-#     epoch_count += 1
-#     costs = model.fit(trX, trY)
-#     if cost0 is None:
-#         cost0 = costs[-1]
-#     elif cost1 is None:
-#         cost1 = costs[-1]
-#     else:
-#         if ( (cost1 - cost0) <= min_cost_delta ) and (cost1 <= min_cost):
-#             continue_epochs = False
-#     # Eval Train/Test Error Every N Epochs
-#     if epoch_count % 50 == 0:
-#         trYpred = model.predict(trX)
-#         teYpred = model.predict(teX)
-        
-#         # Generate back into sentences
-#         trY = trY > .5
-#         teY = teY > .5
-#         trYpred = trYpred > .5
-#         teYpred = teYpred > .5
-#         train_error = misclassification_rate(trY, trYpred)
-#         test_error = misclassification_rate(teY, teYpred)
-#         print "Train Error: ", train_error
-#         print "Test Error: ", test_error
+# Train
+algorithm = GradientDescent(
+      cost=cost
+    , parameters=cg.parameters
+    , step_rule=AdaDelta()
+    )
+main_loop = MainLoop(
+      model=Model(cost)
+    , data_stream=train_transformer
+    , algorithm=algorithm
+    , extensions=[
+          DataStreamMonitoring(
+              [cost]
+            , train_transformer,
+              prefix='train')
+        # , DataStreamMonitoring(
+        #       [cost]
+        #     , test_stream,
+        #       prefix='test')
+        , Printing()
+        , ProgressBar()
+        ]
+    )
+main_loop.run()
