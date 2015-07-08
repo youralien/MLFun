@@ -1,6 +1,7 @@
 import os
 import csv
 import ipdb
+import copy
 
 import numpy as np
 import pandas as pd
@@ -8,6 +9,7 @@ import theano
 
 from fuel import config
 from fuel.transformers import Transformer
+from foxhound.utils import shuffle
 from pycocotools.coco import COCO
 
 dataDir='/home/luke/datasets/coco'
@@ -20,7 +22,7 @@ def coco(mode="dev"):
 
     # reduce it to a dev set
     if mode == "dev":
-        train_fns = train_fns[:100]
+        train_fns = train_fns[:128*100]
     trX, trY = loadFeaturesTargets(train_fns, dataType)
     
     # val_fns
@@ -29,7 +31,7 @@ def coco(mode="dev"):
 
     # reduce it to a dev set
     if mode == "dev":
-        test_fns = test_fns[:25]
+        test_fns = test_fns[:128]
     teX, teY = loadFeaturesTargets(test_fns, dataType)
 
     return trX, teX, trY, teY 
@@ -115,14 +117,17 @@ class FoxyDataStream(object):
         trXt and trYt as the X and Y transforms respectively
     """
 
-    def __init__(self, data, sources, iterator, iteration_scheme=None):
+    def __init__(self, data, sources, make_iterator, iteration_scheme=None):
         self.data = data
         self.sources = sources
-        self.iterator = iterator
+        self.iterator = make_iterator
+        # self.iterator_prototype = make_iterator
         self.iteration_scheme = iteration_scheme # Compatibility with the blocks mainloop
 
     def get_epoch_iterator(self, as_dict=False):
 
+        # iterator = self.iterator_prototype(None)
+        # print iterator
         for datamb in self.iterator.iterXY(*self.data):
             yield dict(zip(self.sources, datamb)) if as_dict else datamb
 
@@ -185,6 +190,17 @@ class GloveTransformer(Transformer):
             , dtype=theano.config.floatX)
 
         return image_reps, word_reps
+
+class ShuffleBatch(Transformer):
+    """Shuffle the Batch, helpful when generating contrastive examples"""
+    def __init__(self, data_stream):
+        super(ShuffleBatch, self).__init__(data_stream)
+
+    def get_data(self, request=None):
+        if request is not None:
+            raise ValueError
+        data = next(self.child_epoch_iterator)
+        return shuffle(*data)
 
 if __name__ == '__main__':
     trX, teX, trY, teY = coco(mode="dev")
