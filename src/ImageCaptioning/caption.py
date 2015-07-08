@@ -24,13 +24,13 @@ from foxhound.transforms import SeqPadded
 
 # local imports
 from modelbuilding import Encoder, PairwiseRanking
-from dataset import coco, FoxyDataStream, GloveTransformer, ShuffleBatch
-
-
+from dataset import (coco, FoxyDataStream, GloveTransformer,
+    ShuffleBatch, FoxyIterationScheme)
 
 # # # # # # # # # # #
-# Modeling Training #
+# DataPreprocessing #
 # # # # # # # # # # #
+
 trX, teX, trY, teY = coco(mode="dev")
 
 # Word Vectors
@@ -43,67 +43,64 @@ vect.fit(trY)
 trXt=lambda x: floatX(x)
 teXt=lambda x: floatX(x)
 Yt=lambda y: intX(SeqPadded(vect.transform(y), 'back'))
-# Yt=lambda y: y
-
 
 # Foxhound Iterators
 train_batch_size = 16
 test_batch_size = 16
 
-train_iterator = iterators.Linear(trXt=trXt, trYt=Yt, size=train_batch_size, shuffle=False)
-
-# train_iterator = lambda x: iterators.Linear(trXt=trXt, trYt=Yt, size=train_batch_size, shuffle=False)
-train_iterator2 = iterators.Linear(trXt=trXt, trYt=Yt, size=train_batch_size, shuffle=False)
-# train_iterator_k = lambda x: iterators.Linear(trXt=trXt, trYt=Yt, size=train_batch_size, shuffle=False)
-# test_iterator = lambda x: iterators.Linear(trXt=teXt, trYt=Yt, size=test_batch_size, shuffle=False)
-# test_iterator_k = lambda x: iterators.Linear(trXt=teXt, trYt=Yt, size=test_batch_size, shuffle=False)
+train_iterator = [iterators.Linear(
+    trXt=trXt, trYt=Yt, size=train_batch_size, shuffle=False
+    ) for i in range(2)
+]
+train_iterator_k = [iterators.Linear(
+    trXt=trXt, trYt=Yt, size=train_batch_size, shuffle=False
+    ) for i in range(2)
+]
 
 # DataStreams
-train_stream = FoxyDataStream(
+sources = ("image_vects", "word_vects")
+sources_k = ("image_vects_k", "word_vects_k")
+
+train_stream = [FoxyDataStream(
       (trX, trY)
-    , ("image_vects", "word_vects")
-    , train_iterator
-    )
-train_stream2 = FoxyDataStream(
+    , sources
+    , train_iterator[i]
+    , FoxyIterationScheme(len(trX), train_batch_size)
+    ) for i in range(2)
+]
+train_stream_k = [FoxyDataStream(
       (trX, trY)
-    , ("image_vects", "word_vects")
-    , train_iterator2
-    )
-# test_stream = FoxyDataStream(
-#       (teX, teY)
-#     , ("image_vects", "word_vects")
-#     , test_iterator
-#     )
-#test_k_stream = FoxyDataStream(
-#      (teX, teY)
-#    , ("image_vects", "word_vects")
-#    , test_k_iterator
-#    , SequentialScheme(len(teX), test_batch_size)
-#    )
+    , sources_k
+    , train_iterator_k[i]
+    , FoxyIterationScheme(len(trX), train_batch_size)
+    ) for i in range(2)
+]
 
-# image_vects, tokens = train_stream.get_epoch_iterator().next()
-# print trY[:3]
-# print "\n"
-# print vect.inverse_transform(tokens.T[:3])
-
-
-# embedding_dim = K.  50 or 300
-embedding_dim = 50
-
+# Glove Word Vectors
+embedding_dim = 50 # embedding dimension = K.  50 or 300
 glove_version = "glove.6B.%sd.txt.gz" % embedding_dim
-train_transformer = GloveTransformer(glove_version, data_stream=train_stream, vectorizer=vect)
-train_transformer2 = GloveTransformer(glove_version, data_stream=train_stream2, vectorizer=vect)
-# test_transformer = GloveTransformer(glove_version, data_stream=test_stream, vectorizer=vect)
-#train_k_transformer = GloveTransformer(glove_version, data_stream=train_k_stream, vectorizer=vect)
-#test_k_transformer = GloveTransformer(glove_version, data_stream=test_k_stream, vectorizer=vect)
-# ep = train_transformer.get_epoch_iterator()
 
+train_transformer = [GloveTransformer(
+    glove_version, data_stream=train_stream[i], vectorizer=vect
+    ) for i in range(2)
+]
+train_transformer_k = [GloveTransformer(
+    glove_version, data_stream=train_stream_k[i], vectorizer=vect
+    ) for i in range(2)
+]
 
-"""
-image_vects: array-like, shape (n_examples, 4096)
-word_vects: lists of list of lists, shape-ish (n_examples, n_words, embedding dimensionality (50 or 300))
-image_vects, word_vects = transformer.get_epoch_iterator().next()
-"""
+# Final Data Streams w/ contrastive examples
+final_train_stream = [Merge(
+      (train_transformer[i], train_transformer_k[i])
+    , sources + sources_k
+    ) for i in range(2)
+]
+for stream in final_train_stream:
+    stream.iteration_scheme = FoxyIterationScheme(len(trX), train_batch_size)
+
+# # # # # # # # # # #
+# Modeling Building #
+# # # # # # # # # # #
 
 s = Encoder(
           image_feature_dim=4096
@@ -115,8 +112,8 @@ s.initialize()
 
 image_vects = T.matrix('image_vects') # named to match the source name
 word_vects = T.tensor3('word_vects') # named to match the source name
-#image_vects_k = T.matrix('image_vects_k') # named to match the contrastive source name
-#word_vects_k = T.tensor3('word_vects_k') # named to match the contrastive source name
+image_vects_k = T.matrix('image_vects_k') # named to match the contrastive source name
+word_vects_k = T.tensor3('word_vects_k') # named to match the contrastive source name
 
 # import numpy as np
 # image_vects.tag.test_value = np.zeros((2, 4096), dtype='float32')
@@ -126,31 +123,15 @@ word_vects = T.tensor3('word_vects') # named to match the source name
 
 # x is image_embedding matrix, v is the hidden states representing the sentences
 X, V = s.apply(image_vects, word_vects)
-#X_k, V_k = s.apply(image_vects_k, word_vects_k)
+X_k, V_k = s.apply(image_vects_k, word_vects_k)
 
-cost = PairwiseRanking(alpha=0.2).apply(X, V, X, V)
+cost = PairwiseRanking(alpha=0.2).apply(X, V, X_k, V_k)
 
 cg = ComputationGraph(cost)
 
-#final_train_k_stream = Merge(
-#      (train_transformer, ShuffleBatch(train_k_transformer))
-#    , ("image_vects", "word_vects", "image_vects_k", "word_vects_k")
-#    )
-#
-#final_test_k_stream = Merge(
-#      (test_transformer, ShuffleBatch(test_k_transformer))
-#    , ("image_vects", "word_vects", "image_vects_k", "word_vects_k")
-#    )
-
-#import ipdb
-#trep = final_train_k_stream.get_epoch_iterator()
-#train = trep.next()
-#teep = final_train_k_stream.get_epoch_iterator()
-#test = teep.next()
-#print [t.shape for t in train]
-#print [t.shape for t in test]
-#
-#ipdb.set_trace()
+# # # # # # # # # # #
+# Modeling Training #
+# # # # # # # # # # #
 
 import ipdb
 ipdb.set_trace()
@@ -162,12 +143,12 @@ algorithm = GradientDescent(
     )
 main_loop = MainLoop(
       model=Model(cost)
-    , data_stream=train_transformer
+    , data_stream=final_train_stream[0]
     , algorithm=algorithm
     , extensions=[
           DataStreamMonitoring(
               [cost]
-            , train_transformer2
+            , final_train_stream[1]
             , prefix='train')
        # , DataStreamMonitoring(
        #       [cost]
