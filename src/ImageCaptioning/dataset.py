@@ -1,7 +1,6 @@
 import os
 import csv
 import ipdb
-import copy
 
 import numpy as np
 import pandas as pd
@@ -130,6 +129,23 @@ class FoxyDataStream(object):
         # print iterator
         for datamb in self.iterator.iterXY(*self.data):
             yield dict(zip(self.sources, datamb)) if as_dict else datamb
+
+class FoxyIterationScheme(object):
+    """mimics like a Fox a fuel iteration scheme
+
+    Important Attributes
+    --------------------
+    num_batches: int
+
+    OR
+
+    num_examples: int
+
+    batch_size: int
+    """
+    def __init__(self, examples, batch_size):
+        self.num_examples = examples
+        self.batch_size = batch_size
 
 class GloveTransformer(Transformer):
     glove_folder = "glove"
