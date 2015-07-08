@@ -91,7 +91,7 @@ train_transformer_k = [GloveTransformer(
 
 # Final Data Streams w/ contrastive examples
 final_train_stream = [Merge(
-      (train_transformer[i], train_transformer_k[i])
+      (train_transformer[i], ShuffleBatch(train_transformer_k[i]))
     , sources + sources_k
     ) for i in range(2)
 ]
