@@ -13,7 +13,7 @@ from pycocotools.coco import COCO
 
 dataDir='/home/luke/datasets/coco'
 
-def coco(mode="dev"):
+def coco(mode="dev", batch_size=64):
 
     # train_fns
     dataType='train2014'
@@ -21,7 +21,7 @@ def coco(mode="dev"):
 
     # reduce it to a dev set
     if mode == "dev":
-        train_fns = train_fns[:128*100]
+        train_fns = shuffle(train_fns)[:batch_size*50]
     trX, trY = loadFeaturesTargets(train_fns, dataType)
     
     # val_fns
@@ -30,10 +30,10 @@ def coco(mode="dev"):
 
     # reduce it to a dev set
     if mode == "dev":
-        test_fns = test_fns[:128]
+        test_fns = shuffle(test_fns)[:batch_size*25]
     teX, teY = loadFeaturesTargets(test_fns, dataType)
 
-    return trX, teX, trY, teY 
+    return trX, teX, trY, teY
 
 def loadFeaturesTargets(fns, dataType):
     """
@@ -155,7 +155,7 @@ class GloveTransformer(Transformer):
         super(GloveTransformer, self).__init__(data_stream)
         dir_path = os.path.join(config.data_path, self.glove_folder)
         data_path = os.path.join(dir_path, glove_file)
-        raw = pd.read_csv(data_path, header=None, sep=' ', quoting=csv.QUOTE_NONE, nrows=20000)
+        raw = pd.read_csv(data_path, header=None, sep=' ', quoting=csv.QUOTE_NONE, nrows=50000)
         #raw = pd.read_csv(data_path, nrows=400, header=None, sep=' ', quoting=csv.QUOTE_NONE)
         keys = raw[0].values
         self.vectors = raw[range(1, len(raw.columns))].values.astype(theano.config.floatX)

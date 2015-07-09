@@ -46,14 +46,15 @@ class Encoder(Initializable):
         
         image_embedding = self.image_embedding.apply(image_vects)
         
-        # inputs = self.to_inputs.apply(word_vects)
-        inputs = word_vects.dimshuffle(1, 0, 2)
-        # hidden, cells = self.transition.apply(inputs=inputs, mask=None)
+        # inputs = word_vects
+        inputs = self.to_inputs.apply(word_vects)
+        inputs = inputs.dimshuffle(1, 0, 2)
+        hidden, cells = self.transition.apply(inputs=inputs, mask=None)
 
-        # # the last hidden state represents the accumulation of all the words (i.e. the sentence)
-        # # grab all batches, grab the last value representing accumulation of the sequence, grab all features
-        # sentence_embedding = hidden[-1]
-        sentence_embedding = inputs.mean(axis=0)
+        # the last hidden state represents the accumulation of all the words (i.e. the sentence)
+        # grab all batches, grab the last value representing accumulation of the sequence, grab all features
+        sentence_embedding = hidden[-1]
+        # sentence_embedding = inputs.mean(axis=0)
         return image_embedding, sentence_embedding
 
 @add_metaclass(ABCMeta)
@@ -163,7 +164,13 @@ if __name__ == '__main__':
         word_vects_tv = np.zeros((batch_size, seq_len, embedding_dim), dtype='float32')
         # expecting sentence embedding to be [batch_size, embedding_dim]
         f = theano.function([word_vects], sem)
-        print(f(word_vects_tv))
+        
+        print "input word vects shape: ", (batch_size, seq_len, embedding_dim)
+        out = f(word_vects_tv)
+        print "output shape"
+        print out.shape
+        print "output"
+        print out
 
     def test_cos_sim():
         X = T.matrix('iem')
@@ -209,8 +216,8 @@ if __name__ == '__main__':
         lcs = l2norm(lcs)
 
         # tile by number of contrastive terms
-        lim = tensor.tile(lim, (batch_size, 1))
-        ls = tensor.tile(ls, (batch_size, 1))
+        # lim = tensor.tile(lim, (batch_size, 1))
+        # ls = tensor.tile(ls, (batch_size, 1))
         
         # pairwise ranking loss (https://github.com/youralien/skip-thoughts/blob/master/eval_rank.py)
         cost_im = margin - (lim * ls).sum(axis=1) + (lim * lcs).sum(axis=1)
