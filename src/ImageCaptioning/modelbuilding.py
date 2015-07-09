@@ -19,16 +19,16 @@ class Encoder(Initializable):
         self.image_embedding = Linear(
               input_dim=image_feature_dim
             , output_dim=embedding_dim
-            , weights_init=IsotropicGaussian(0.02)
-            , biases_init=Constant(0.)
+            # , weights_init=IsotropicGaussian(0.02)
+            # , biases_init=Constant(0.)
             , name="image_embedding"
             )
 
         self.to_inputs = Linear(
               input_dim=embedding_dim
             , output_dim=embedding_dim*4 # gate_inputs = vstack(input, forget, cell, hidden)
-            , weights_init=IsotropicGaussian(0.02)
-            , biases_init=Constant(0.)
+            # , weights_init=IsotropicGaussian(0.02)
+            # , biases_init=Constant(0.)
             , name="to_inputs"
             )
 
@@ -50,7 +50,8 @@ class Encoder(Initializable):
         hidden, cells = self.transition.apply(inputs=inputs, mask=None)
 
         # the last hidden state represents the accumulation of all the words (i.e. the sentence)
-        sentence_embedding = hidden[-1]
+        # grab all batches, grab the last value representing accumulation of the sequence, grab all features
+        sentence_embedding = hidden[:,-1, :]
 
         return image_embedding, sentence_embedding
 
@@ -108,16 +109,31 @@ def cos_sim(x, v):
     return cosine_similarity
 
 if __name__ == '__main__':
+    import theano
     import theano.tensor as T
+    theano.config.compute_test_value = 'warn'
+
+    image_vects = T.matrix('image_vects')
+    word_vects = T.tensor3('word_vects')
+    
+    import numpy as np
+
+    batch_size = 2
+    image_feature_dim = 64
+    seq_len = 4
+    embedding_dim = 7
+    image_vects.tag.test_value = np.zeros((batch_size, image_feature_dim), dtype='float32')
+    word_vects.tag.test_value = np.zeros((batch_size, seq_len, embedding_dim), dtype='float32')
+
     s = Encoder(
-              image_feature_dim=4096
-            , embedding_dim=256
+              image_feature_dim=image_feature_dim
+            , embedding_dim=embedding_dim
             , biases_init=Constant(0.)
             , weights_init=IsotropicGaussian(0.02)
             )
     s.initialize()
+    iem, sem = s.apply(image_vects, word_vects)
 
-    image_vects = T.matrix('image_vects')
-    word_vects = T.tensor3('word_vects')
-    X, V = s.apply(image_vects, word_vects)
-
+    # expecting sentence embedding to be [batch_size, embedding_dim]
+    f = theano.function([word_vects], sem)
+    print(f(word_vects.tag.test_value))
