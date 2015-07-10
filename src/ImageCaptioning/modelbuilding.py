@@ -172,6 +172,7 @@ if __name__ == '__main__':
         print "output"
         print out
 
+    # test_encoder()
     def test_cos_sim():
         X = T.matrix('iem')
         V = T.matrix('sem')
@@ -194,6 +195,7 @@ if __name__ == '__main__':
         print "out: cos sim"
         print f(X_tv, V_tv)
 
+    # test_cos_sim()
     def test_cost():
 
         margin = 0.2 # alpha term, should not be more than 1!
