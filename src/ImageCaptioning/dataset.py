@@ -13,7 +13,7 @@ from pycocotools.coco import COCO
 
 dataDir='/home/luke/datasets/coco'
 
-def coco(mode="dev", batch_size=64):
+def coco(mode="dev", batch_size=64, n_captions=1):
 
     # train_fns
     dataType='train2014'
@@ -22,7 +22,7 @@ def coco(mode="dev", batch_size=64):
     # reduce it to a dev set
     if mode == "dev":
         train_fns = shuffle(train_fns)[:batch_size*50]
-    trX, trY = loadFeaturesTargets(train_fns, dataType)
+    trX, trY = loadFeaturesTargets(train_fns, dataType, n_captions)
     
     # val_fns
     dataType='val2014'
@@ -31,11 +31,11 @@ def coco(mode="dev", batch_size=64):
     # reduce it to a dev set
     if mode == "dev":
         test_fns = shuffle(test_fns)[:batch_size*25]
-    teX, teY = loadFeaturesTargets(test_fns, dataType)
+    teX, teY = loadFeaturesTargets(test_fns, dataType, n_captions)
 
     return trX, teX, trY, teY
 
-def loadFeaturesTargets(fns, dataType):
+def loadFeaturesTargets(fns, dataType, n_captions=1):
     """
     Note: filenames should come from the same type of dataType.
 
@@ -44,7 +44,9 @@ def loadFeaturesTargets(fns, dataType):
     ----------
     fns: filenames, strings
 
+    dataType: string folder, i.e. train2014, val2014
 
+    n_captions: int, number of captions for each image to load
     """
     annFile = '%s/annotations/captions_%s.json'%(dataDir,dataType)
     caps=COCO(annFile)
@@ -55,14 +57,15 @@ def loadFeaturesTargets(fns, dataType):
     for fn in fns:
         # Features
         x = np.load('%s/features/%s/%s'%(dataDir, dataType, fn))
-        X.append(x)
-        
+
         # Targets
         annIds = caps.getAnnIds(imgIds=getImageId(fn));
         anns = caps.loadAnns(annIds)
 
-        # Just get one (the first) caption for now...
-        Y.append(getCaption(anns[0]))
+        # store a duplicate image feature vector for each extra caption we grab
+        for i in range(n_captions):
+            X.append(x)
+            Y.append(getCaption(anns[i]))
 
     return X, Y
 
