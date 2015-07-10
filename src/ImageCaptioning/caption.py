@@ -12,6 +12,9 @@ from blocks.model import Model
 from blocks.algorithms import GradientDescent, AdaDelta
 from blocks.extensions.monitoring import DataStreamMonitoring
 from blocks.extensions import Printing, ProgressBar, FinishAfter
+from blocks.extensions.training import TrackTheBest
+from blocks.extensions.predicates import OnLogRecord
+from blocks.extensions.saveload import Checkpoint
 
 from fuel.transformers import Merge
 
@@ -30,14 +33,15 @@ from dataset import (coco, FoxyDataStream, GloveTransformer,
 # DataPreprocessing #
 # # # # # # # # # # #
 batch_size = 128
-
 trX, teX, trY, teY = coco(mode="dev", batch_size=batch_size)
-trX_k, teX_k, trY_k, teY_k = (trX, teX, trY, teY)
+trX_k, teX_k, trY_k, teY_k = coco(mode="dev", batch_size=batch_size)
+# trX, teX, trY, teY = coco(mode='everything')
+# trX_k, teX_k, trY_k, teY_k = (trX, teX, trY, teY)
 
 # trX_k, teX_k, trY_k, teY_k = coco(mode="dev", batch_size=batch_size)
 
 # Word Vectors
-vect = Tokenizer(min_df=5, max_features=50000)
+vect = Tokenizer(min_df=2, max_features=50000)
 vect.fit(trY)
 
 # theano.config.compute_test_value = 'off' # Use 'warn' to activate this feature
@@ -56,6 +60,14 @@ train_iterator = [iterators.Linear(
 ]
 train_iterator_k = [iterators.Linear(
     trXt=trXt, trYt=Yt, size=batch_size, shuffle=False
+    ) for i in range(2)
+]
+test_iterator = [iterators.Linear(
+    trXt=teXt, trYt=Yt, size=batch_size, shuffle=False
+    ) for i in range(2)
+]
+test_iterator_k = [iterators.Linear(
+    trXt=teXt, trYt=Yt, size=batch_size, shuffle=False
     ) for i in range(2)
 ]
 
@@ -77,7 +89,20 @@ train_stream_k = [FoxyDataStream(
     , FoxyIterationScheme(len(trX), batch_size)
     ) for i in range(2)
 ]
-
+test_stream = [FoxyDataStream(
+      (teX, teY)
+    , sources
+    , test_iterator[i]
+    , FoxyIterationScheme(len(teX), batch_size)
+    ) for i in range(2)
+]
+test_stream_k = [FoxyDataStream(
+      (teX_k, teY_k)
+    , sources_k
+    , test_iterator_k[i]
+    , FoxyIterationScheme(len(teX), batch_size)
+    ) for i in range(2)
+]
 # Glove Word Vectors
 embedding_dim = 300 # embedding dimension = K.  50 or 300
 glove_version = "glove.6B.%sd.txt.gz" % embedding_dim
@@ -90,6 +115,14 @@ train_transformer_k = [GloveTransformer(
     glove_version, data_stream=train_stream_k[i], vectorizer=vect
     ) for i in range(2)
 ]
+test_transformer = [GloveTransformer(
+    glove_version, data_stream=test_stream[i], vectorizer=vect
+    ) for i in range(2)
+]
+test_transformer_k = [GloveTransformer(
+    glove_version, data_stream=test_stream_k[i], vectorizer=vect
+    ) for i in range(2)
+]
 
 # Final Data Streams w/ contrastive examples
 final_train_stream = [Merge(
@@ -99,6 +132,14 @@ final_train_stream = [Merge(
 ]
 for stream in final_train_stream:
     stream.iteration_scheme = FoxyIterationScheme(len(trX), batch_size)
+
+final_test_stream = [Merge(
+      (test_transformer[i], ShuffleBatch(test_transformer_k[i]))
+    , sources + sources_k
+    ) for i in range(2)
+]
+for stream in final_test_stream:
+    stream.iteration_scheme = FoxyIterationScheme(len(teX), batch_size)
 
 # # # # # # # # # # #
 # Modeling Building #
@@ -152,7 +193,7 @@ cost_s = cost_s * (cost_s > 0.) # this is like max(0, pairwise-ranking-loss)
 cost_s = cost_s.sum(0)
 
 cost = cost_im + cost_s
-cost.name = "pairwise ranking loss"
+cost.name = "pairwise_ranking_loss"
 
 cg = ComputationGraph(cost)
 
@@ -174,13 +215,13 @@ main_loop = MainLoop(
               [cost]
             , final_train_stream[1]
             , prefix='train')
-       # , DataStreamMonitoring(
-       #       [cost]
-       #     , final_test_k_stream
-       #     , prefix='test')
-        , Printing()
+        , DataStreamMonitoring(
+              [cost]
+            , final_test_stream[0]
+            , prefix='test')
         , ProgressBar()
-        , FinishAfter(after_n_epochs=10)
+        , Printing()
+        # , FinishAfter(after_n_epochs=10)
         ]
     )
 main_loop.run()
