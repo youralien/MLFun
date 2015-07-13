@@ -28,7 +28,8 @@ from foxhound.transforms import SeqPadded
 # local imports
 from modelbuilding import Encoder, l2norm
 from dataset import (coco, FoxyDataStream, GloveTransformer,
-    ShuffleBatch, FoxyIterationScheme, loadFeaturesTargets)
+    ShuffleBatch, FoxyIterationScheme, loadFeaturesTargets, fillOutFilenames)
+from utils import dict2json, json2dict
 
 # # # # # # # # # # #
 # DataPreprocessing #
@@ -44,6 +45,10 @@ class DataETL():
         batch_size:
         embedding_dim: for glove vects
         min_df and max_features: for Tokenizer
+
+        Returns
+        -------
+        merged stream with sources = sources + sources_k
         """
         trX, trY = (X, Y)
         trX_k, trY_k = (X, Y)
@@ -214,20 +219,33 @@ class ModelEval():
 
     @staticmethod
     def rankcaptions(filenames, top_n=3):
-        image_features, captions = loadFeaturesTargets(filenames, 'val2014', n_captions=3)
+        n_captions = top_n # the captions it ranks as highest should all be relevant
+        batch_size = 128
+        image_features, captions = loadFeaturesTargets(filenames, 'val2014', n_captions=n_captions)
         stream = DataETL.getFinalStream(
               image_features
             , captions
             , ("image_vects", "word_vects")
             , ("image_vects_k", "word_vects_k")
-            , batch_size=128
+            , batch_size=batch_size
             )
-        
+
         # RCL: make this looping through all the batches
         # do a single batch
-        im_vects, s_vects = stream.get_epoch_iterator().next()
+        batch = stream.get_epoch_iterator().next()
+        im_vects = batch[0]
+        s_vects = batch[1]
         f_emb = ModelIO.load('/home/luke/datasets/coco/predict/encoder')
         im_emb, s_emb = f_emb(im_vects, s_vects)
+
+        # account for make sure theres matching fns for each of the n_captions
+        image_fns = fillOutFilenames(filenames, n_captions=n_captions)
+        
+        relevant_captions = ModelEval.getRelevantCaptions(
+            im_emb, s_emb, image_fns[:batch_size], captions[:batch_size], z=n_captions, top_n=top_n
+        )
+        dict2json(relevant_captions, "rankcaptions.json")
+        return relevant_captions
 
     @staticmethod
     def rankscores(final_train_stream, final_test_stream, f_emb):
@@ -295,5 +313,85 @@ class ModelEval():
         medr = np.floor(np.median(ranks)) + 1
         return (r1, r5, r10, medr)
 
+    @staticmethod
+    def getRelevantCaptions(im_emb, s_emb, image_fns, caption_strings, top_n, z=1, npts=None):
+        """
+        parameters
+        ----------
+        Images: (z*N, K) matrix of im_emb
+        Captions: (z*N, K) matrix of captions
+        image_fns: the filenames of im_emb for each image vectors in the im_emb matrix
+        captions_strings: the captions (as strings) for each sentence vector in captions matrix
+
+        Returns
+        -------
+
+        """
+        if npts == None:
+            npts = im_emb.shape[0] / z
+
+        relevant_captions = {}
+
+        # Project captions
+        for i in range(len(s_emb)):
+            s_emb[i] /= np.linalg.norm(s_emb[i])
+
+        ranks = np.zeros(npts)
+        for index in range(npts):
+
+            # Get query image
+            im = im_emb[z * index].reshape(1, im_emb.shape[1])
+            im /= np.linalg.norm(im)
+
+            # Compute scores
+            d = np.dot(im, s_emb.T).flatten() # cosine distance
+            inds = np.argsort(d)[::-1] # sort by highest cosine distance
+            
+            # build up relevant top_n captions
+            image_fn = image_fns[index]
+            top_inds = inds[:top_n]
+            top_captions = [caption_strings[ind] for ind in top_inds]
+
+            relevant_captions[image_fn] = top_captions
+
+        return relevant_captions
+
 if __name__ == '__main__':
-    train()
+    def test_samplerankcaptions():
+        import os
+        dataDir='/home/luke/datasets/coco'
+        dataType='val2014'
+        test_fns = os.listdir("%s/features/%s"%(dataDir, dataType))
+        test_fns = test_fns[:128]
+        n_captions=3
+
+        image_features, captions = loadFeaturesTargets(test_fns, 'val2014', n_captions=n_captions)
+        image_fns = fillOutFilenames(test_fns, n_captions=n_captions)
+
+        # these premade ones are shape (128, 300)
+        batch_size = 128
+        embedding_dim = 300
+        im_emb = np.load('im_emb.npy')
+        s_emb = np.load('s_emb.npy')
+
+        # GAH not sure if the captions will match, but this is just a test
+        relevant_captions = ModelEval.getRelevantCaptions(im_emb, s_emb, image_fns[:batch_size], captions[:batch_size], top_n=3)
+        print relevant_captions
+        import ipdb
+        ipdb.set_trace()
+
+    # test_samplerankcaptions()
+    
+    
+
+
+    def foo():# val_fns
+        import os
+        dataDir='/home/luke/datasets/coco'
+        dataType='val2014'
+        test_fns = os.listdir("%s/features/%s"%(dataDir, dataType))
+        test_fns = test_fns[:128*2]
+
+        ModelEval.rankcaptions(test_fns)
+
+    foo()

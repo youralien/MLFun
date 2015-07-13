@@ -69,6 +69,10 @@ def loadFeaturesTargets(fns, dataType, n_captions=1):
 
     return X, Y
 
+def npy2jpg(fn):
+    name, ext = fn.split(".")
+    return name + ".jpg"
+
 def getImageId(fn):
     """Filename to image id
 
@@ -93,6 +97,12 @@ def getCaption(ann):
     ann: list of annotation objects
     """
     return str(ann["caption"])
+
+def fillOutFilenames(filenames, n_captions):
+    new_fns = []
+    for fn in filenames:
+        new_fns.extend([fn for i in range(n_captions)])
+    return new_fns
 
 # Foxhound + Fuel
 class FoxyDataStream(object):
@@ -222,5 +232,18 @@ class ShuffleBatch(Transformer):
         return shuffle(*data)
 
 if __name__ == '__main__':
-    trX, teX, trY, teY = coco(mode="dev")
+    # trX, teX, trY, teY = coco(mode="dev")
+    # ipdb.set_trace()
+
+
+    def test_fillOutFilenames(n_captions=3):
+        dataDir='/home/luke/datasets/coco'
+        dataType='val2014'
+        test_fns = os.listdir("%s/features/%s"%(dataDir, dataType))
+        test_fns = test_fns[:128]
+        
+        new_fns = fillOutFilenames(test_fns, n_captions) 
+        print new_fns
+
+    test_fillOutFilenames()
     ipdb.set_trace()
