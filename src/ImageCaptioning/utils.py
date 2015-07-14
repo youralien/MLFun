@@ -2,6 +2,7 @@ import os
 import numpy as np
 import json
 import glob
+import decimal
 
 def vStackMatrices(x, new_x):
     return stackMatrices(x, new_x, np.vstack)
@@ -43,10 +44,16 @@ def json2dict(jsonpath):
     f.close()
     return dictionary
 
-def dict2json(dictionary, jsonpath):
+def dict2json(dictionary, jsonpath, cls=None):
     f = open(jsonpath, 'w')
-    json.dump(dictionary, f)
+    json.dump(dictionary, f, cls=cls)
     f.close()
+
+class DecimalEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, decimal.Decimal):
+            return float(o)
+        return super(DecimalEncoder, self).default(o)
 
 def listdir_valid_extensions(pathname, valid_extensions):
     """Inspired by os.listdir, except it filters for a number of valid file extensions
