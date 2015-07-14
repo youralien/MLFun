@@ -1,3 +1,6 @@
+# common python
+import decimal
+
 # scientific python
 import numpy as np
 import theano
@@ -29,7 +32,7 @@ from foxhound.transforms import SeqPadded
 from modelbuilding import Encoder, l2norm
 from dataset import (coco, FoxyDataStream, GloveTransformer,
     ShuffleBatch, FoxyIterationScheme, loadFeaturesTargets, fillOutFilenames)
-from utils import dict2json, json2dict, vStackMatrices
+from utils import dict2json, json2dict, vStackMatrices, DecimalEncoder
 
 # # # # # # # # # # #
 # DataPreprocessing #
@@ -62,6 +65,7 @@ class DataETL():
         Yt=lambda y: intX(SeqPadded(vect.transform(y), 'back'))
 
         # Foxhound Iterators
+        # RCL: Write own iterator to sample positive examples/captions, since there are 5 for each image.
         train_iterator = iterators.Linear(
             trXt=trXt, trYt=Yt, size=batch_size, shuffle=False
             )
@@ -220,7 +224,8 @@ class ModelEval():
 
     @staticmethod
     def rankcaptions(filenames, top_n=5):
-        n_captions = top_n # the captions it ranks as highest should all be relevant
+        # n_captions = top_n # the captions it ranks as highest should all be relevant
+        n_captions = 1 # RCL: image caption mismatch when n_captions is not just one
         batch_size = 128
         image_features, captions = loadFeaturesTargets(filenames, 'val2014', n_captions=n_captions)
         stream = DataETL.getFinalStream(
@@ -233,6 +238,7 @@ class ModelEval():
 
         f_emb = ModelIO.load('/home/luke/datasets/coco/predict/fullencoder_maxfeatures.50000')
         im_emb, s_emb = None, None
+        print "Computing Image and Text Embeddings"
         for batch in stream.get_epoch_iterator():
             im_vects = batch[0]
             s_vects = batch[1]
@@ -243,10 +249,11 @@ class ModelEval():
         # account for make sure theres matching fns for each of the n_captions
         image_fns = fillOutFilenames(filenames, n_captions=n_captions)
         
+        print "Computing Cosine Distances and Ranking Captions"
         relevant_captions = ModelEval.getRelevantCaptions(
             im_emb, s_emb, image_fns, captions, z=n_captions, top_n=top_n
         )
-        dict2json(relevant_captions, "rankcaptions.json")
+        dict2json(relevant_captions, "rankcaptions_fullencoder_maxfeatures.50000.json", cls=DecimalEncoder)
         return relevant_captions
 
     @staticmethod
@@ -327,7 +334,17 @@ class ModelEval():
 
         Returns
         -------
+        relevant_captions: dictionary storing the top_n rank predictions for each image file
 
+        looks like
+        {
+            ... , 
+            filepath.npy: {
+                captions: ["caption with ranking 1", ...]
+                cos_sims: [0.9, 0.5, ...]
+            },
+            ...
+        }
         """
         if npts == None:
             npts = im_emb.shape[0] / z
@@ -338,7 +355,6 @@ class ModelEval():
         for i in range(len(s_emb)):
             s_emb[i] /= np.linalg.norm(s_emb[i])
 
-        ranks = np.zeros(npts)
         for index in range(npts):
 
             # Get query image
@@ -353,8 +369,12 @@ class ModelEval():
             image_fn = image_fns[index]
             top_inds = inds[:top_n]
             top_captions = [caption_strings[ind] for ind in top_inds]
+            top_cos_sims = [decimal.Decimal(float(d[ind])) for ind in top_inds]
 
-            relevant_captions[image_fn] = top_captions
+            relevant_captions[image_fn] = {
+                  "captions": top_captions
+                , "cos_sims": top_cos_sims
+                }
 
         return relevant_captions
 
@@ -372,7 +392,6 @@ if __name__ == '__main__':
 
         # these premade ones are shape (128, 300)
         batch_size = 128
-        embedding_dim = 300
         im_emb = np.load('im_emb.npy')
         s_emb = np.load('s_emb.npy')
 
