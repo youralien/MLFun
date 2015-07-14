@@ -47,6 +47,16 @@ def loadFeaturesTargets(fns, dataType, n_captions=1):
     dataType: string folder, i.e. train2014, val2014
 
     n_captions: int, number of captions for each image to load
+
+    Returns
+    -------
+    X: list of im_vects
+        1st list length = len(fns)
+        vectors are shape (4096, )
+
+    Y: list of list of captions. 
+        1st list length = len(fns)
+        sublist length = n_captions  
     """
     annFile = '%s/annotations/captions_%s.json'%(dataDir,dataType)
     caps=COCO(annFile)
@@ -62,10 +72,12 @@ def loadFeaturesTargets(fns, dataType, n_captions=1):
         annIds = caps.getAnnIds(imgIds=getImageId(fn));
         anns = caps.loadAnns(annIds)
 
-        # store a duplicate image feature vector for each extra caption we grab
-        for i in range(n_captions):
-            X.append(x)
-            Y.append(getCaption(anns[i]))
+        # sample n_captions per image
+        anns = shuffle(anns)
+        captions = [getCaption(anns[i]) for i in range(n_captions)]
+        
+        X.append(x)
+        Y.append(captions)
 
     return X, Y
 
