@@ -27,12 +27,13 @@ from foxhound.preprocessing import Tokenizer
 from foxhound import iterators
 from foxhound.theano_utils import floatX, intX
 from foxhound.transforms import SeqPadded
+from foxhound.rng import py_rng
 
 # local imports
 from modelbuilding import Encoder, l2norm
 from dataset import (coco, FoxyDataStream, GloveTransformer,
     ShuffleBatch, FoxyIterationScheme, loadFeaturesTargets, fillOutFilenames)
-from utils import dict2json, json2dict, vStackMatrices, DecimalEncoder
+from utils import dict2json, vStackMatrices, DecimalEncoder
 
 # # # # # # # # # # #
 # DataPreprocessing #
@@ -41,7 +42,7 @@ class DataETL():
 
     @staticmethod
     def getFinalStream(X, Y, sources, sources_k, batch_size=128, embedding_dim=300,
-        min_df=2, max_features=50000):
+        min_df=2, max_features=50000, n_captions=1):
         """Despite horrible variable names, this method
         gives back the final stream for both train or test data
 
@@ -56,13 +57,22 @@ class DataETL():
         trX, trY = (X, Y)
         trX_k, trY_k = (X, Y)
 
+        def sampleCaptions(ymb, K=1):
+            """ymb = minibatch of captions
+            it samples K captions from the available list of n captions
+            """
+            sampled_captions = []
+            for captions_of_an_img in ymb:
+                sampled_captions.extend(py_rng.sample(captions_of_an_img, K))
+            return sampled_captions
+
         # vectorizer
         vect = Tokenizer(min_df=2, max_features=50000)
-        vect.fit(trY)
+        vect.fit(sampleCaptions(trY, n_captions))
 
         # Transforms
         trXt=lambda x: floatX(x)
-        Yt=lambda y: intX(SeqPadded(vect.transform(y), 'back'))
+        Yt=lambda y: intX(SeqPadded(vect.transform(sampleCaptions(y)), 'back'))
 
         # Foxhound Iterators
         # RCL: Write own iterator to sample positive examples/captions, since there are 5 for each image.
@@ -109,8 +119,10 @@ def train(
     , sources_k = ("image_vects_k", "word_vects_k")
     , batch_size=128
     , embedding_dim=300
-    ):  
-    trX, teX, trY, teY = coco(mode="full", batch_size=batch_size, n_captions=1)
+    , n_captions=5
+    ):
+    # data should not be shuffled, as there is semantics in their placement
+    trX, teX, trY, teY = coco(mode="full", batch_size=batch_size, n_captions=n_captions)
 
     # # # # # # # # # # #
     # Modeling Building #
@@ -178,16 +190,21 @@ def train(
         )
     main_loop = MainLoop(
           model=Model(cost)
-        , data_stream=DataETL.getFinalStream(trX, trY, sources=sources, sources_k=sources_k, batch_size=batch_size)
+        , data_stream=DataETL.getFinalStream(trX, trY, sources=sources,
+              sources_k=sources_k, batch_size=batch_size, n_captions=n_captions)
         , algorithm=algorithm
         , extensions=[
               DataStreamMonitoring(
                   [cost]
-                , DataETL.getFinalStream(trX, trY, sources=sources, sources_k=sources_k, batch_size=batch_size)
+                , DataETL.getFinalStream(trX, trY, sources=sources,
+                      sources_k=sources_k, batch_size=batch_size,
+                      n_captions=n_captions)
                 , prefix='train')
             , DataStreamMonitoring(
                   [cost]
-                , DataETL.getFinalStream(teX, teY, sources=sources, sources_k=sources_k, batch_size=batch_size)
+                , DataETL.getFinalStream(teX, teY, sources=sources,
+                      sources_k=sources_k, batch_size=batch_size,
+                      n_captions=n_captions)
                 , prefix='test')
             # , ProgressBar()
             , Printing()
@@ -196,8 +213,8 @@ def train(
         )
     main_loop.run()
 
-    # ModelIO.save(f_emb, '/home/luke/datasets/coco/predict/fullencoder_maxfeatures.50000')
-    ModelIO.save(f_emb, '/home/luke/datasets/coco/predict/encoder')
+    ModelIO.save(f_emb, '/home/luke/datasets/coco/predict/fullencoder_maxfeatures.50000_epochsampler')
+    # ModelIO.save(f_emb, '/home/luke/datasets/coco/predict/encoder')
 
 # # # # # # #
 #  Model IO #
@@ -379,6 +396,8 @@ class ModelEval():
         return relevant_captions
 
 if __name__ == '__main__':
+    train()
+
     def test_samplerankcaptions():
         import os
         dataDir='/home/luke/datasets/coco'
@@ -415,4 +434,4 @@ if __name__ == '__main__':
 
         ModelEval.rankcaptions(test_fns)
 
-    foo()
+    # foo()
