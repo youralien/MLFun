@@ -29,7 +29,7 @@ from foxhound.transforms import SeqPadded
 from modelbuilding import Encoder, l2norm
 from dataset import (coco, FoxyDataStream, GloveTransformer,
     ShuffleBatch, FoxyIterationScheme, loadFeaturesTargets, fillOutFilenames)
-from utils import dict2json, json2dict
+from utils import dict2json, json2dict, vStackMatrices
 
 # # # # # # # # # # #
 # DataPreprocessing #
@@ -106,7 +106,7 @@ def train(
     , batch_size=128
     , embedding_dim=300
     ):  
-    trX, teX, trY, teY = coco(mode="dev", batch_size=batch_size, n_captions=3)
+    trX, teX, trY, teY = coco(mode="full", batch_size=batch_size, n_captions=1)
 
     # # # # # # # # # # #
     # Modeling Building #
@@ -185,13 +185,14 @@ def train(
                   [cost]
                 , DataETL.getFinalStream(teX, teY, sources=sources, sources_k=sources_k, batch_size=batch_size)
                 , prefix='test')
-            , ProgressBar()
+            # , ProgressBar()
             , Printing()
-            , FinishAfter(after_n_epochs=15)
+            # , FinishAfter(after_n_epochs=15)
             ]
         )
     main_loop.run()
 
+    # ModelIO.save(f_emb, '/home/luke/datasets/coco/predict/fullencoder_maxfeatures.50000')
     ModelIO.save(f_emb, '/home/luke/datasets/coco/predict/encoder')
 
 # # # # # # #
@@ -218,7 +219,7 @@ class ModelIO():
 class ModelEval():
 
     @staticmethod
-    def rankcaptions(filenames, top_n=3):
+    def rankcaptions(filenames, top_n=5):
         n_captions = top_n # the captions it ranks as highest should all be relevant
         batch_size = 128
         image_features, captions = loadFeaturesTargets(filenames, 'val2014', n_captions=n_captions)
@@ -230,19 +231,20 @@ class ModelEval():
             , batch_size=batch_size
             )
 
-        # RCL: make this looping through all the batches
-        # do a single batch
-        batch = stream.get_epoch_iterator().next()
-        im_vects = batch[0]
-        s_vects = batch[1]
-        f_emb = ModelIO.load('/home/luke/datasets/coco/predict/encoder')
-        im_emb, s_emb = f_emb(im_vects, s_vects)
+        f_emb = ModelIO.load('/home/luke/datasets/coco/predict/fullencoder_maxfeatures.50000')
+        im_emb, s_emb = None, None
+        for batch in stream.get_epoch_iterator():
+            im_vects = batch[0]
+            s_vects = batch[1]
+            batch_im_emb, batch_s_emb = f_emb(im_vects, s_vects)
+            im_emb = vStackMatrices(im_emb, batch_im_emb)
+            s_emb = vStackMatrices(s_emb, batch_s_emb)
 
         # account for make sure theres matching fns for each of the n_captions
         image_fns = fillOutFilenames(filenames, n_captions=n_captions)
         
         relevant_captions = ModelEval.getRelevantCaptions(
-            im_emb, s_emb, image_fns[:batch_size], captions[:batch_size], z=n_captions, top_n=top_n
+            im_emb, s_emb, image_fns, captions, z=n_captions, top_n=top_n
         )
         dict2json(relevant_captions, "rankcaptions.json")
         return relevant_captions
@@ -390,7 +392,7 @@ if __name__ == '__main__':
         dataDir='/home/luke/datasets/coco'
         dataType='val2014'
         test_fns = os.listdir("%s/features/%s"%(dataDir, dataType))
-        test_fns = test_fns[:128*2]
+        # test_fns = test_fns[:128*3]
 
         ModelEval.rankcaptions(test_fns)
 
