@@ -56,7 +56,7 @@ def getDataStream(dataset, batch_size):
     # Padded Words are now in the targets_mask
     # stream = Cast(stream, 'int32', which_sources=('targets', 'targets_mask'))
     # stream = Cast(stream, 'float8', which_sources=('features',))
-    # stream = FilterSources(stream, sources=("features", "targets_mask"))
+    stream = FilterSources(stream, sources=("features", "targets"))
     # stream = Rename(stream, names={"features": "features", "targets_mask": "targets"})
 
     return stream
@@ -72,17 +72,96 @@ def getTestStream(batch_size=1000):
 # # # # # # # # # # #
 # Modeling Building #
 # # # # # # # # # # #
-from abc import ABCMeta, abstractmethod
-from six import add_metaclass
-
 from blocks.initialization import IsotropicGaussian, Constant
-from blocks.bricks.base import application, Brick
+from blocks.bricks.base import application, Brick, lazy
 from blocks.bricks.lookup import LookupTable
 from blocks.bricks.recurrent import LSTM
 from blocks.bricks import Initializable, Linear
 from blocks.bricks.sequence_generators import (
-    SequenceGenerator, Readout, TrivialEmitter, TrivialFeedback)
+    SequenceGenerator, Readout, TrivialEmitter, AbstractEmitter, TrivialFeedback)
 from blocks.monitoring import aggregation
+from blocks.graph import ComputationGraph
+
+def l2(arr, axis=None):
+    """Return the L2 norm of a tensor.
+    Parameters
+    ----------
+    arr : Theano variable.
+        The variable to calculate the norm of.
+    axis : integer, optional [default: None]
+        The sum will be performed along this axis. This makes it possible to
+        calculate the norm of many tensors in parallel, given they are organized
+        along some axis. If not given, the norm will be computed for the whole
+        tensor.
+    Returns
+    -------
+    res : Theano variable.
+        If ``axis`` is ``None``, this will be a scalar. Otherwise it will be
+        a tensor with one dimension less, where the missing dimension
+        corresponds to ``axis``.
+    Examples
+    --------
+    >>> from theano.printing import pprint
+    >>> v = T.vector()
+    >>> this_norm = l2(v)
+    >>> pprint(this_norm)
+    'sqrt((Sum((<TensorType(float32, vector)> ** TensorConstant{2})) + TensorConstant{9.99999993923e-09}))'
+    >>> m = T.matrix()
+    >>> this_norm = l2(m, axis=1)
+    >>> pprint(this_norm)
+    'sqrt((Sum{1}((<TensorType(float32, matrix)> ** TensorConstant{2})) + TensorConstant{9.99999993923e-09}))'
+    >>> m = T.matrix()
+    >>> this_norm = l2(m)
+    >>> pprint(this_norm)
+    'sqrt((Sum((<TensorType(float32, matrix)> ** TensorConstant{2})) + TensorConstant{9.99999993923e-09}))'
+    """
+    return T.sqrt((arr ** 2).sum(axis=axis) + 1e-8)
+
+class SimilarityEmitter(AbstractEmitter):
+    """An emitter for the trivial case when readouts are outputs.
+    Parameters
+    ----------
+    readout_dim : int
+        The dimension of the readout.
+    Notes
+    -----
+    By default :meth:`cost` always returns zero tensor.
+    """
+    @lazy(allocation=['readout_dim'])
+    def __init__(self, readout_dim, **kwargs):
+        super(SimilarityEmitter, self).__init__(**kwargs)
+        self.readout_dim = readout_dim
+
+    @application
+    def emit(self, readouts):
+        return readouts
+
+    @application
+    def cost(self, readouts, outputs):
+        l2readouts = l2(readouts)
+        l2outputs = l2(outputs)
+        readouts = readouts // l2readouts
+        outputs = outputs // l2outputs
+
+        # cosine similarity cost.  if the vectors predicted are the actual ones
+        # cos_sim will be 1, 1 -1 = 0 which is 0 cost.
+        margin = 1 # alpha term, should not be more than 1!
+
+        # pairwise ranking loss (https://github.com/youralien/skip-thoughts/blob/master/eval_rank.py)
+        cost = margin - (readouts * outputs).mean(axis=1)
+        cost = cost * (cost > 0.) # this is like the max(0, pairwise-ranking-loss)
+        cost = cost.mean(0)
+        cost.name = "similarity"
+        return cost
+
+    @application
+    def initial_outputs(self, batch_size):
+        return T.zeros((batch_size, self.readout_dim))
+
+    def get_dim(self, name):
+        if name == 'outputs':
+            return self.readout_dim
+        return super(SimilarityEmitter, self).get_dim(name)
 
 class MNISTPoet(Initializable):
 
@@ -107,9 +186,9 @@ class MNISTPoet(Initializable):
         transition = LSTM(name='transition', dim=dim)
 
         readout = Readout(
-              readout_dim=alphabet_size
+              readout_dim=dim
             , source_names=["states"]
-            , emitter=TrivialEmitter(name='emitter')
+            , emitter=SimilarityEmitter(name='emitter')
             , feedback_brick=TrivialFeedback(output_dim=dim)
             , name="readout"
             )
@@ -201,5 +280,43 @@ f = theano.function([im, chars], cost)
 data = getTrainStream().get_epoch_iterator().next()
 
 
-emb = f(data[0], data[2])
+costvalue = f(*data)
+
 ipdb.set_trace()
+
+cg = ComputationGraph(cost)
+
+ipdb.set_trace()
+# # # # # # # # # # #
+# Modeling Training #
+# # # # # # # # # # #
+from blocks.main_loop import MainLoop
+from blocks.model import Model
+from blocks.algorithms import GradientDescent, AdaDelta
+from blocks.extensions.monitoring import DataStreamMonitoring
+from blocks.extensions import Printing, ProgressBar, FinishAfter
+
+algorithm = GradientDescent(
+      cost=cost
+    , parameters=cg.parameters
+    , step_rule=AdaDelta()
+    )
+main_loop = MainLoop(
+      model=Model(cost)
+    , data_stream=getTrainStream()
+    , algorithm=algorithm
+    , extensions=[
+          DataStreamMonitoring(
+              [cost]
+            , getTrainStream()
+            , prefix='train')
+        , DataStreamMonitoring(
+              [cost]
+            , getTestStream()
+            , prefix='test')
+        , ProgressBar()
+        , Printing()
+        , FinishAfter(after_n_epochs=15)
+        ]
+    )
+main_loop.run()
