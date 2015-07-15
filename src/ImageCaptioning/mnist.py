@@ -81,8 +81,8 @@ from blocks.bricks.lookup import LookupTable
 from blocks.bricks.recurrent import LSTM
 from blocks.bricks import Initializable, Linear
 from blocks.bricks.sequence_generators import (
-    SequenceGenerator, Readout, SoftmaxEmitter, LookupFeedback)
-
+    SequenceGenerator, Readout, TrivialEmitter, TrivialFeedback)
+from blocks.monitoring import aggregation
 
 class MNISTPoet(Initializable):
 
@@ -106,31 +106,32 @@ class MNISTPoet(Initializable):
 
         transition = LSTM(name='transition', dim=dim)
 
-#        readout = Readout(
-#              readout_dim=alphabet_size
-#            , source_names=[image_embedding.apply.outputs[0],
-#                            transition.apply.states[0]]
-#            , emitter=SoftmaxEmitter(name='emitter')
-#            , feedback_brick=LookupFeedback(num_outputs=alphabet_size, feedback_dim=dim)
-#            , name="readout"
-#            )
-#
-#        generator = SequenceGenerator(
-#              readout=readout
-#            , transition=transition
-#            )
+        readout = Readout(
+              readout_dim=alphabet_size
+            , source_names=["states"]
+            , emitter=TrivialEmitter(name='emitter')
+            , feedback_brick=TrivialFeedback(output_dim=dim)
+            , name="readout"
+            )
+
+        generator = SequenceGenerator(
+              readout=readout
+            , transition=transition
+            )
 
         self.image_embedding = image_embedding
         self.lookup = lookup
         self.to_inputs = to_inputs
         self.transition = transition
+        self.generator = generator
 
         self.children = [
                   self.image_embedding
                 , self.lookup
                 , self.to_inputs
                 , self.transition
-                ]
+                , self.generator
+                , ]
 
     @application(inputs=["image_vects", "chars"], outputs=['out'])
     def apply(self, image_vects, chars):
@@ -145,13 +146,16 @@ class MNISTPoet(Initializable):
 
         # shape (batch, sequence_pad_length + 1, features)
         embedding = T.concatenate((image_embedding, text_embedding), axis=1)
+        # cost = self.generator.cost_matrix(embedding[:, :])
+        cost = aggregation.mean(self.generator.cost_matrix(embedding[:, :]).sum(), embedding.shape[1])
+        cost.name = "sequence_log_likelihood"
 
         # shape (batch, sequence_pad_length + 1, features)
         #chars_mask = T.ones_like(image_embedding)
         #chars_mask = T.concatenate((T.ones_like(image_embedding), chars_mask), axis=1)
-        to_inputs= self.to_inputs.apply(embedding)
-        hidden, cells = self.transition.apply(inputs=to_inputs)
-        return hidden
+        #to_inputs= self.to_inputs.apply(embedding)
+        #hidden, cells = self.transition.apply(inputs=to_inputs)
+        return cost
 
     @application
     def generate(self, chars):
@@ -190,9 +194,9 @@ mnistpoet = MNISTPoet(
         , weights_init=IsotropicGaussian(0.02)
         )
 mnistpoet.initialize()
-output = mnistpoet.apply(im, chars)
+cost = mnistpoet.apply(im, chars)
 
-f = theano.function([im, chars], output)
+f = theano.function([im, chars], cost)
 
 data = getTrainStream().get_epoch_iterator().next()
 
