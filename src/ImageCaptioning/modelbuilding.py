@@ -4,9 +4,13 @@
 from theano import tensor
 
 from blocks.initialization import IsotropicGaussian, Constant
-from blocks.bricks.base import application
-from blocks.bricks.recurrent import LSTM
+from blocks.bricks.base import application, lazy
+from blocks.bricks.recurrent import LSTM, GatedRecurrent, recurrent
 from blocks.bricks import Initializable, Linear
+from blocks.bricks.lookup import LookupTable
+from blocks.bricks.sequence_generators import (
+    SequenceGenerator, Readout, AbstractEmitter, TrivialFeedback)
+from blocks.monitoring import aggregation
 
 class Encoder(Initializable):
 
@@ -54,6 +58,54 @@ class Encoder(Initializable):
         # sentence_embedding = inputs.mean(axis=0)
         return image_embedding, sentence_embedding
 
+class GatedRecurrentWithInitialState(GatedRecurrent):
+    
+    @lazy(allocation=['dim'])
+    def __init__(self, dim, activation=None, gate_activation=None,
+                 **kwargs):
+        super(GatedRecurrentWithInitialState, self).__init__(
+            dim, activation, gate_activation, **kwargs)
+
+    @recurrent(sequences=['mask', 'inputs', 'gate_inputs'],
+               states=['states'], outputs=['states'],
+               contexts=['cnn_context'])
+    def apply(self, inputs, gate_inputs, states, mask=None, cnn_context=None):
+        """Apply the gated recurrent transition.
+        Parameters
+        ----------
+        states : :class:`~tensor.TensorVariable`
+            The 2 dimensional matrix of current states in the shape
+            (batch_size, dim). Required for `one_step` usage.
+        inputs : :class:`~tensor.TensorVariable`
+            The 2 dimensional matrix of inputs in the shape (batch_size,
+            dim)
+        gate_inputs : :class:`~tensor.TensorVariable`
+            The 2 dimensional matrix of inputs to the gates in the
+            shape (batch_size, 2 * dim).
+        mask : :class:`~tensor.TensorVariable`
+            A 1D binary array in the shape (batch,) which is 1 if there is
+            data available, 0 if not. Assumed to be 1-s only if not given.
+        cnn_context:
+            my addition...
+        Returns
+        -------
+        output : :class:`~tensor.TensorVariable`
+            Next states of the network.
+        """
+        return super(GatedRecurrentWithInitialState, self).apply(
+            inputs, gate_inputs, states, mask, iterate=False)
+
+    @application(outputs=apply.states)
+    # @application
+    def initial_states(self, batch_size, *args, **kwargs):
+        # cnn_context should be shape (batch_size, dim)
+        cnn_context = kwargs['cnn_context']
+        
+        # RCL: must be shape (seqlength, hidden dimension) for it to be brodadcastable
+        # however, how the hell do I pass information of each element of the batch if
+        # I must slice it off at seqlen?  batch_size here bears no resemblance to seqlength
+        return [cnn_context[:batch_size]]
+
 # l2 norm, row-wise
 def l2norm(X):
     norm = tensor.sqrt(tensor.pow(X, 2).sum(1))
@@ -82,7 +134,7 @@ if __name__ == '__main__':
         s.initialize()
         iem, sem = s.apply(image_vects, word_vects)
 
-        image_vects_tv = np.zeros((batch_size, image_feature_dim), dtype='float32')
+        # image_vects_tv = np.zeros((batch_size, image_feature_dim), dtype='float32')
         word_vects_tv = np.zeros((batch_size, seq_len, embedding_dim), dtype='float32')
         # expecting sentence embedding to be [batch_size, embedding_dim]
         f = theano.function([word_vects], sem)
