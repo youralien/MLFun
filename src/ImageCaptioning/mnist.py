@@ -61,7 +61,7 @@ def getDataStream(dataset, batch_size):
 
     return stream
 
-def getTrainStream(batch_size=200):
+def getTrainStream(batch_size=128):
     train = MNIST(('train',))
     return getDataStream(train, batch_size=batch_size)
 
@@ -78,9 +78,10 @@ from blocks.bricks.lookup import LookupTable
 from blocks.bricks.recurrent import LSTM
 from blocks.bricks import Initializable, Linear
 from blocks.bricks.sequence_generators import (
-    SequenceGenerator, Readout, TrivialEmitter, AbstractEmitter, TrivialFeedback)
+    SequenceGenerator, Readout, SoftmaxEmitter, AbstractEmitter, LookupFeedback)
 from blocks.monitoring import aggregation
 from blocks.graph import ComputationGraph
+from modelbuilding import GatedRecurrentWithInitialState
 
 def l2(arr, axis=None):
     """Return the L2 norm of a tensor.
@@ -176,20 +177,15 @@ class MNISTPoet(Initializable):
             , name='image_embedding'
             )
 
-        lookup = LookupTable(alphabet_size, dim)
-        to_inputs = Linear(
-              input_dim=dim
-            , output_dim=dim*4
-            , name="to_inputs"
+        transition = GatedRecurrentWithInitialState(
+            name='transition', dim=dim
             )
 
-        transition = LSTM(name='transition', dim=dim)
-
         readout = Readout(
-              readout_dim=dim
+              readout_dim=alphabet_size
             , source_names=["states"]
-            , emitter=SimilarityEmitter(name='emitter')
-            , feedback_brick=TrivialFeedback(output_dim=dim)
+            , emitter=SoftmaxEmitter(name='emitter')
+            , feedback_brick=LookupFeedback(num_outputs=alphabet_size, feedback_dim=dim)
             , name="readout"
             )
 
@@ -199,35 +195,34 @@ class MNISTPoet(Initializable):
             )
 
         self.image_embedding = image_embedding
-        self.lookup = lookup
-        self.to_inputs = to_inputs
         self.transition = transition
         self.generator = generator
 
         self.children = [
                   self.image_embedding
-                , self.lookup
-                , self.to_inputs
                 , self.transition
                 , self.generator
                 , ]
 
     @application(inputs=["image_vects", "chars"], outputs=['out'])
-    def apply(self, image_vects, chars):
+    def cost(self, image_vects, chars):
         # shape (batch, features)
         image_embedding = self.image_embedding.apply(image_vects)
 
-        # shape (batch, 1, features)
-        image_embedding = image_embedding.dimshuffle(0, 'x', 1)
-
-        # shape (batch, sequence_pad_length, features)
-        text_embedding = self.lookup.apply(chars)
-
-        # shape (batch, sequence_pad_length + 1, features)
-        embedding = T.concatenate((image_embedding, text_embedding), axis=1)
-        # cost = self.generator.cost_matrix(embedding[:, :])
-        cost = aggregation.mean(self.generator.cost_matrix(embedding[:, :]).sum(), embedding.shape[1])
-        cost.name = "sequence_log_likelihood"
+        # will the initialize() ruin everything?
+        
+        cost = aggregation.mean(
+              self.generator.cost_matrix(
+                chars, cnn_context=image_embedding).sum()
+            , chars.shape[1]
+            )
+        
+        # cost = aggregation.mean(cost, chars.shape[1])
+        # cost = aggregation.mean(
+        #       self.generator.cost_matrix(
+        #         chars, cnn_context=image_embedding).sum()
+        #     , embedding.shape[1]
+        #     )
 
         # shape (batch, sequence_pad_length + 1, features)
         #chars_mask = T.ones_like(image_embedding)
@@ -273,7 +268,7 @@ mnistpoet = MNISTPoet(
         , weights_init=IsotropicGaussian(0.02)
         )
 mnistpoet.initialize()
-cost = mnistpoet.apply(im, chars)
+cost = mnistpoet.cost(im, chars)
 
 f = theano.function([im, chars], cost)
 
