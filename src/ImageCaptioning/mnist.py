@@ -1,9 +1,7 @@
-import ipdb
 import operator
 import logging
 import cPickle as pkl
 
-import theano
 import theano.tensor as T
 import numpy as np
 from picklable_itertools.extras import equizip
@@ -13,11 +11,6 @@ from blocks.model import Model
 from blocks.algorithms import GradientDescent, AdaDelta
 from blocks.extensions.monitoring import DataStreamMonitoring
 from blocks.extensions import Printing, ProgressBar, FinishAfter
-from blocks.extensions.saveload import Checkpoint
-from blocks.serialization import load_parameter_values
-from blocks.filter import VariableFilter
-
-from blocks.search import BeamSearch
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +18,10 @@ logger = logging.getLogger(__name__)
 # DataPreprocessing #
 # # # # # # # # # # #
 from fuel.datasets import MNIST
-from fuel.transformers import (Flatten, SingleMapping, Padding, Mapping,
-    FilterSources, Cast, Rename)
+from fuel.transformers import (Flatten, SingleMapping, Padding,
+    FilterSources)
 from fuel.streams import DataStream
 from fuel.schemes import ShuffledScheme
-
-from foxhound.transforms import SeqPadded
-
 
 # Dictionaries
 all_chars = ([chr(ord('a') + i + 1) for i in range(26)]) # alphabeti only
@@ -73,11 +63,7 @@ def getDataStream(dataset, batch_size):
     stream = Words2Indices(stream, which_sources=('targets',))
     stream = Padding(stream)
 
-    # Padded Words are now in the targets_mask
-    # stream = Cast(stream, 'int32', which_sources=('targets', 'targets_mask'))
-    # stream = Cast(stream, 'float8', which_sources=('features',))
     stream = FilterSources(stream, sources=("features", "targets"))
-    # stream = Rename(stream, names={"features": "features", "targets_mask": "targets"})
 
     return stream
 
@@ -93,10 +79,10 @@ def getTestStream(batch_size=1000):
 # Modeling Building #
 # # # # # # # # # # #
 from blocks.initialization import IsotropicGaussian, Constant
-from blocks.bricks.base import application, Brick, lazy
+from blocks.bricks.base import application
 from blocks.bricks import Initializable, Linear
 from blocks.bricks.sequence_generators import (
-    SequenceGenerator, Readout, SoftmaxEmitter, AbstractEmitter, LookupFeedback)
+    SequenceGenerator, Readout, SoftmaxEmitter, LookupFeedback)
 from blocks.monitoring import aggregation
 from blocks.graph import ComputationGraph
 from modelbuilding import GatedRecurrentWithInitialState
@@ -164,7 +150,7 @@ class MNISTPoet(Initializable):
                 , cnn_context=image_embedding
                 )
 
-def main(mode, save_path, num_batches=300):
+def main(mode, num_batches=3000):
 
     image_dim = 784
     embedding_dim = 300
@@ -217,8 +203,6 @@ def main(mode, save_path, num_batches=300):
                       [cost]
                     , getTestStream()
                     , prefix='test')
-                #, Checkpoint(save_path, every_n_batches=500, save_separately=["model", "log"])
-                #, Checkpoint(save_path, every_n_batches=500)
                 , ProgressBar()
                 , Printing()
                 , FinishAfter(after_n_batches=num_batches)
@@ -293,6 +277,6 @@ class ModelIO():
         return func
 
 if __name__ == "__main__":
-    #main("train", "predict-mnist/pklmain_loop")
-    main("sample", "predict-mnist/pklmain_loop")
+    main("train")
+    main("sample")
 
