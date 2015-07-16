@@ -249,18 +249,18 @@ class MNISTPoet(Initializable):
     # def generate(self, chars):
 
 
-theano.config.compute_test_value = 'off' # Use 'warn' to activate this feature
+# theano.config.compute_test_value = 'warn' # Use 'warn' to activate this feature
 
 # Tensors are sensitive as fuck to the dtype, especially in theano.scan
 im = T.matrix('features')
 chars = T.lmatrix('targets')
 #chars_mask = T.matrix('targets_mask')
-# im.tag.test_value = np.zeros((2, 28*28))
-# chars.tag.test_value = np.zeros((2, 5))
+im.tag.test_value = np.zeros((2, 28*28), dtype='float32')
+chars.tag.test_value = np.zeros((2, 5), dtype='int64')
 
 batch_size = 128
 image_dim = 784
-embedding_dim = 100
+embedding_dim = 88
 mnistpoet = MNISTPoet(
           image_dim=image_dim
         , dim=embedding_dim
@@ -268,7 +268,8 @@ mnistpoet = MNISTPoet(
         , weights_init=IsotropicGaussian(0.02)
         )
 mnistpoet.initialize()
-cost = mnistpoet.cost(im, chars)
+dimchars = chars.dimshuffle(1, 0)
+cost = mnistpoet.cost(im, dimchars)
 
 f = theano.function([im, chars], cost)
 

@@ -70,41 +70,14 @@ class GatedRecurrentWithInitialState(GatedRecurrent):
                states=['states'], outputs=['states'],
                contexts=['cnn_context'])
     def apply(self, inputs, gate_inputs, states, mask=None, cnn_context=None):
-        """Apply the gated recurrent transition.
-        Parameters
-        ----------
-        states : :class:`~tensor.TensorVariable`
-            The 2 dimensional matrix of current states in the shape
-            (batch_size, dim). Required for `one_step` usage.
-        inputs : :class:`~tensor.TensorVariable`
-            The 2 dimensional matrix of inputs in the shape (batch_size,
-            dim)
-        gate_inputs : :class:`~tensor.TensorVariable`
-            The 2 dimensional matrix of inputs to the gates in the
-            shape (batch_size, 2 * dim).
-        mask : :class:`~tensor.TensorVariable`
-            A 1D binary array in the shape (batch,) which is 1 if there is
-            data available, 0 if not. Assumed to be 1-s only if not given.
-        cnn_context:
-            my addition...
-        Returns
-        -------
-        output : :class:`~tensor.TensorVariable`
-            Next states of the network.
-        """
         return super(GatedRecurrentWithInitialState, self).apply(
             inputs, gate_inputs, states, mask, iterate=False)
 
     @application(outputs=apply.states)
-    # @application
     def initial_states(self, batch_size, *args, **kwargs):
         # cnn_context should be shape (batch_size, dim)
         cnn_context = kwargs['cnn_context']
-        
-        # RCL: must be shape (seqlength, hidden dimension) for it to be brodadcastable
-        # however, how the hell do I pass information of each element of the batch if
-        # I must slice it off at seqlen?  batch_size here bears no resemblance to seqlength
-        return [cnn_context[:batch_size]]
+        return [cnn_context]
 
 # l2 norm, row-wise
 def l2norm(X):
