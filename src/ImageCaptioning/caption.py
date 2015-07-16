@@ -1,10 +1,12 @@
 # common python
 import decimal
+import operator
 
 # scientific python
 import numpy as np
 import theano
 from theano import tensor as T
+from picklable_itertools.extras import equizip
 
 # blocks model building
 from blocks.initialization import Uniform, IsotropicGaussian, Constant
@@ -38,11 +40,25 @@ from utils import dict2json, vStackMatrices, DecimalEncoder
 # # # # # # # # # # #
 # DataPreprocessing #
 # # # # # # # # # # #
+
+# global vectorizer
+vect = Tokenizer(min_df=2, max_features=50000)
+
 class DataETL():
 
     @staticmethod
+    def sampleCaptions(ymb, K=1):
+        """ymb = minibatch of captions
+        it samples K captions from the available list of n captions
+        """
+        sampled_captions = []
+        for captions_of_an_img in ymb:
+            sampled_captions.extend(py_rng.sample(captions_of_an_img, K))
+        return sampled_captions
+
+    @staticmethod
     def getFinalStream(X, Y, sources, sources_k, batch_size=128, embedding_dim=300,
-        min_df=2, max_features=50000, n_captions=1):
+        n_captions=1):
         """Despite horrible variable names, this method
         gives back the final stream for both train or test data
 
@@ -57,17 +73,9 @@ class DataETL():
         trX, trY = (X, Y)
         trX_k, trY_k = (X, Y)
 
-        def sampleCaptions(ymb, K=1):
-            """ymb = minibatch of captions
-            it samples K captions from the available list of n captions
-            """
-            sampled_captions = []
-            for captions_of_an_img in ymb:
-                sampled_captions.extend(py_rng.sample(captions_of_an_img, K))
-            return sampled_captions
+        sampleCaptions = DataETL.sampleCaptions
 
         # vectorizer
-        vect = Tokenizer(min_df=2, max_features=50000)
         vect.fit(sampleCaptions(trY, n_captions))
 
         # Transforms
@@ -114,7 +122,45 @@ class DataETL():
 
         return final_train_stream
 
-def train(
+    @staticmethod
+    def getTokenizedStream(X, Y, sources,
+            batch_size=128, embedding_dim=300, n_captions=1):
+        """getTokenizedStream returns data with images as cnn features
+        and captions as tokenized words. NOT glove vectors.
+
+        This is being used for the end2end implementation. See google's paper
+        "Show and Tell: Generating Image Captions".  Thus we are not using
+        contrastive examples either.
+        """
+        trX, trY = (X, Y)
+
+        sampleCaptions = DataETL.sampleCaptions
+
+        # vectorizer
+        vect.fit(sampleCaptions(trY, n_captions))
+
+        # Transforms
+        trXt=lambda x: floatX(x)
+        Yt=lambda y: intX(SeqPadded(vect.transform(sampleCaptions(y)), 'back'))
+
+        # Foxhound Iterators
+        # RCL: Write own iterator to sample positive examples/captions, since there are 5 for each image.
+        train_iterator = iterators.Linear(
+            trXt=trXt, trYt=Yt, size=batch_size, shuffle=False
+            )
+
+        # FoxyDataStreams
+        train_stream = FoxyDataStream(
+              (trX, trY)
+            , sources
+            , train_iterator
+            , FoxyIterationScheme(len(trX), batch_size)
+            )
+
+        train_stream.iteration_scheme = FoxyIterationScheme(len(trX), batch_size)
+        return train_stream
+
+def trainencoder(
       sources = ("image_vects", "word_vects")
     , sources_k = ("image_vects_k", "word_vects_k")
     , batch_size=128
@@ -122,7 +168,7 @@ def train(
     , n_captions=5
     ):
     # data should not be shuffled, as there is semantics in their placement
-    trX, teX, trY, teY = coco(mode="full", batch_size=batch_size, n_captions=n_captions)
+    trX, teX, trY, teY = coco(mode="dev", batch_size=batch_size, n_captions=n_captions)
 
     # # # # # # # # # # #
     # Modeling Building #
@@ -213,8 +259,137 @@ def train(
         )
     main_loop.run()
 
-    ModelIO.save(f_emb, '/home/luke/datasets/coco/predict/fullencoder_maxfeatures.50000_epochsampler')
-    # ModelIO.save(f_emb, '/home/luke/datasets/coco/predict/encoder')
+    # ModelIO.save(f_emb, '/home/luke/datasets/coco/predict/fullencoder_maxfeatures.50000_epochsampler')
+    ModelIO.save(f_emb, '/home/luke/datasets/coco/predict/encoder')
+
+def trainend2end(
+      sources = ("image_vects", "word_tokens")
+    , batch_size=128
+    , embedding_dim=300
+    , n_captions=5
+    ):
+    """Train a full end to end system, w/out the encoder/decoder model.
+    Like the google paper, "Show and Tell: Image Caption Generation"
+
+    Like how we did it with MNIST
+    """
+    # data should not be shuffled, as there is semantics in their placement
+    trX, teX, trY, teY = coco(mode="dev", batch_size=batch_size, n_captions=n_captions)
+    prestream = DataETL.getTokenizedStream(trX, trY, sources=sources,
+        batch_size=batch_size, n_captions=n_captions)
+
+    image_vects = T.matrix(sources[0])
+    word_tokens = T.lmatrix(sources[1])
+    image_vects.tag.test_value = np.zeros((2, 4096), dtype='float32')
+    word_tokens.tag.test_value = np.zeros((2, 15), dtype='int64')
+
+    from mnist import MNISTPoet
+    show_and_tell = MNISTPoet(
+          image_dim=4096
+        , dim=embedding_dim
+        , alphabet_size=vect.n_features
+        , biases_init=Constant(0.)
+        , weights_init=Uniform(width=0.08)
+        )
+    show_and_tell.initialize()
+    cost = show_and_tell.cost(image_vects, word_tokens)
+    cost.name = "seq_log_likelihood"
+    cg = ComputationGraph(cost)
+
+    model = Model(cost)
+    algorithm = GradientDescent(
+          cost=cost
+        , parameters=cg.parameters
+        , step_rule=AdaDelta()
+        )
+    main_loop = MainLoop(
+          model=model
+        , data_stream=DataETL.getTokenizedStream(trX, trY, sources=sources,
+            batch_size=batch_size, n_captions=n_captions)
+        , algorithm=algorithm
+        , extensions=[
+              DataStreamMonitoring(
+                    [cost]
+                  , DataETL.getTokenizedStream(trX, trY, sources=sources,
+                      batch_size=batch_size, n_captions=n_captions)
+                  , prefix='train')
+            , DataStreamMonitoring(
+                    [cost]
+                  , DataETL.getTokenizedStream(teX, teY, sources=sources,
+                      batch_size=batch_size, n_captions=n_captions)
+                  , prefix='test')
+            , ProgressBar()
+            , Printing()
+            ]
+        )
+    main_loop.run()
+
+    # Training finished; save the generator function w/ learned params
+    sample = show_and_tell.generate(image_vects)
+    f_gen = ComputationGraph(sample).get_theano_function()
+    try:
+        ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/end2end_f_gen')
+        print "It saved! Thanks pickle!"
+    except Exception, e:
+        print "Fuck pickle and move on with your life :)"
+        print e
+    ModelEval.predict(f_gen, X=teX, Y=teY)
+
+def traindecoder(
+      sources = ("image_vects", "word_vects")
+    , sources_k = ("image_vects_k", "word_vects_k")
+    , batch_size=128
+    , embedding_dim=300
+    , n_captions=5
+    ):
+    # data should not be shuffled, as there is semantics in their placement
+    trX, teX, trY, teY = coco(mode="dev", batch_size=batch_size, n_captions=n_captions)
+
+    # # # # # # # # # # #
+    # Modeling Building #
+    # # # # # # # # # # #
+
+    stream = DataETL.getFinalStream(trX, trY, sources=sources, sources_k=sources_k,
+            batch_size=batch_size, n_captions=n_captions)
+    batch = stream.get_epoch_iterator().next()
+    f_emb = ModelIO.load('/home/luke/datasets/coco/predict/fullencoder_maxfeatures.50000')
+
+    import ipdb
+    ipdb.set_trace()
+
+    # # # # # # # # # # #
+    # Modeling Training #
+    # # # # # # # # # # #
+
+#    algorithm = GradientDescent(
+#          cost=cost
+#        , parameters=cg.parameters
+#        , step_rule=AdaDelta()
+#        )
+#    main_loop = MainLoop(
+#          model=Model(cost)
+#        , data_stream=DataETL.getFinalStream(trX, trY, sources=sources,
+#              sources_k=sources_k, batch_size=batch_size, n_captions=n_captions)
+#        , algorithm=algorithm
+#        , extensions=[
+#              DataStreamMonitoring(
+#                  [cost]
+#                , DataETL.getFinalStream(trX, trY, sources=sources,
+#                      sources_k=sources_k, batch_size=batch_size,
+#                      n_captions=n_captions)
+#                , prefix='train')
+#            , DataStreamMonitoring(
+#                  [cost]
+#                , DataETL.getFinalStream(teX, teY, sources=sources,
+#                      sources_k=sources_k, batch_size=batch_size,
+#                      n_captions=n_captions)
+#                , prefix='test')
+#            # , ProgressBar()
+#            , Printing()
+#            # , FinishAfter(after_n_epochs=15)
+#            ]
+#        )
+#    main_loop.run()
 
 # # # # # # #
 #  Model IO #
@@ -265,7 +440,7 @@ class ModelEval():
 
         # account for make sure theres matching fns for each of the n_captions
         image_fns = fillOutFilenames(filenames, n_captions=n_captions)
-        
+
         print "Computing Cosine Distances and Ranking Captions"
         relevant_captions = ModelEval.getRelevantCaptions(
             im_emb, s_emb, image_fns, captions, z=n_captions, top_n=top_n
@@ -289,13 +464,13 @@ class ModelEval():
             test_metrics.append(i2t(im_emb, s_emb))
         train_metrics = np.vstack(train_metrics)
         test_metrics = np.vstack(test_metrics)
-        
+
         metric_names = ("r1", "r5", "r10", "med")
         print "\nMean Metric Scores:"
         for i, metric_name in enumerate(metric_names):
             for metrics in (train_metrics, test_metrics):
                 print "%s: %d" % metric_name, np.mean(metrics[:, i])
-        
+
         return train_metrics, test_metrics
 
     @staticmethod
@@ -381,7 +556,7 @@ class ModelEval():
             # Compute scores
             d = np.dot(im, s_emb.T).flatten() # cosine distance
             inds = np.argsort(d)[::-1] # sort by highest cosine distance
-            
+
             # build up relevant top_n captions
             image_fn = image_fns[index]
             top_inds = inds[:top_n]
@@ -395,9 +570,45 @@ class ModelEval():
 
         return relevant_captions
 
-if __name__ == '__main__':
-    train()
+    @staticmethod
+    def predict(f_gen, X=None, Y=None):
+        if X is None or Y is None:
+            trX, teX, trY, teY = coco(mode='dev')
+            X = teX
+            Y = teY
+        ep = DataETL.getTokenizedStream(
+            X=X, Y=Y, sources=('X', 'Y'), batch_size=1).get_epoch_iterator()
+        while True:
+            im_vects, txt_enc = ep.next()
+            txt = " ".join(vect.inverse_transform[code] for code in txt_enc[0])
+            print "\nTrying for: ", txt
+            message=("Number of attempts to generate correct text? ")
+            batch_size = int(input(message))
+            states, outputs, costs = f_gen(
+                    np.repeat(im_vects, batch_size, 0)
+                    )
+            outputs = list(outputs.T)
+            costs = list(costs.T)
+            for i in range(len(outputs)):
+                outputs[i] = list(outputs[i])
+                try:
+                    # 0 is my stop character, via foxhound Tokenizer
+                    true_length = outputs[i].index(0)
+                except ValueError:
+                    # full sequence length
+                    true_length = len(outputs[i])
+                outputs[i] = outputs[i][:true_length]
+                costs[i] = costs[i][:true_length].sum()
+            messages = []
+            for sample, cost in equizip(outputs, costs):
+                message = "({0:0.3f}) ".format(cost)
+                message += " ".join(vect.inverse_transform[code] for code in sample)
+                messages.append((cost, message))
+            messages.sort(key=operator.itemgetter(0), reverse=True)
+            for _, message in messages:
+                print(message)
 
+if __name__ == '__main__':
     def test_samplerankcaptions():
         import os
         dataDir='/home/luke/datasets/coco'
@@ -421,8 +632,7 @@ if __name__ == '__main__':
         ipdb.set_trace()
 
     # test_samplerankcaptions()
-    
-    
+
 
 
     def foo():# val_fns
@@ -435,3 +645,6 @@ if __name__ == '__main__':
         ModelEval.rankcaptions(test_fns)
 
     # foo()
+    # traindecoder()
+    # trainencoder()
+    trainend2end()
