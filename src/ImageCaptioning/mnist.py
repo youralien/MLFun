@@ -1,7 +1,24 @@
 import ipdb
+import operator
+import logging
+
 import theano
 import theano.tensor as T
 import numpy as np
+from picklable_itertools.extras import equizip
+
+from blocks.main_loop import MainLoop
+from blocks.model import Model
+from blocks.algorithms import GradientDescent, AdaDelta
+from blocks.extensions.monitoring import DataStreamMonitoring
+from blocks.extensions import Printing, ProgressBar, FinishAfter
+from blocks.extensions.saveload import Checkpoint
+from blocks.serialization import load_parameter_values
+from blocks.filter import VariableFilter
+
+from blocks.search import BeamSearch
+
+logger = logging.getLogger(__name__)
 
 # # # # # # # # # # #
 # DataPreprocessing #
@@ -15,18 +32,20 @@ from fuel.schemes import ShuffledScheme
 from foxhound.transforms import SeqPadded
 
 
-class Words2Indices(SingleMapping):
+# Dictionaries
+all_chars = ([chr(ord('a') + i + 1) for i in range(26)]) # alphabeti only
+code2char = dict(enumerate(all_chars))
+# stop character
+code2char[0] = "."
+char2code = {v: k for k, v in code2char.items()}
 
-    # Dictionaries
-    all_chars = ([chr(ord('a') + i + 1) for i in range(26)]) # alphabeti only
-    code2char = dict(enumerate(all_chars))
-    char2code = {v: k for k, v in code2char.items()}
+class Words2Indices(SingleMapping):
 
     def __init__(self, data_stream, **kwargs):
         super(Words2Indices, self).__init__(data_stream, **kwargs)
 
     def words2indices(self, word):
-        indices = [self.char2code[char] for char in word]
+        indices = [char2code[char] for char in word]
         return np.asarray(indices, dtype='int')
 
     def mapping(self, source):
@@ -61,8 +80,8 @@ def getDataStream(dataset, batch_size):
 
     return stream
 
-def getTrainStream(batch_size=128):
-    train = MNIST(('train',))
+def getTrainStream(batch_size=200):
+    train = MNIST(('test',))
     return getDataStream(train, batch_size=batch_size)
 
 def getTestStream(batch_size=1000):
@@ -74,8 +93,6 @@ def getTestStream(batch_size=1000):
 # # # # # # # # # # #
 from blocks.initialization import IsotropicGaussian, Constant
 from blocks.bricks.base import application, Brick, lazy
-from blocks.bricks.lookup import LookupTable
-from blocks.bricks.recurrent import LSTM
 from blocks.bricks import Initializable, Linear
 from blocks.bricks.sequence_generators import (
     SequenceGenerator, Readout, SoftmaxEmitter, AbstractEmitter, LookupFeedback)
@@ -209,110 +226,173 @@ class MNISTPoet(Initializable):
         # shape (batch, features)
         image_embedding = self.image_embedding.apply(image_vects)
 
-        # will the initialize() ruin everything?
-        
         cost = aggregation.mean(
               self.generator.cost_matrix(
                 chars, cnn_context=image_embedding).sum()
             , chars.shape[1]
             )
-        
-        # cost = aggregation.mean(cost, chars.shape[1])
-        # cost = aggregation.mean(
-        #       self.generator.cost_matrix(
-        #         chars, cnn_context=image_embedding).sum()
-        #     , embedding.shape[1]
-        #     )
-
-        # shape (batch, sequence_pad_length + 1, features)
-        #chars_mask = T.ones_like(image_embedding)
-        #chars_mask = T.concatenate((T.ones_like(image_embedding), chars_mask), axis=1)
-        #to_inputs= self.to_inputs.apply(embedding)
-        #hidden, cells = self.transition.apply(inputs=to_inputs)
         return cost
 
     @application
-    def generate(self, chars):
-        pass
+    def generate(self, image_vects):
+        # shape (batch, features)
+        image_embedding = self.image_embedding.apply(image_vects)
 
-    # @application
-    # def cost(self, image_vects, chars, chars_mask):
+        return self.generator.generate(
+                  n_steps=5
+                , batch_size=image_embedding.shape[0]
+                , iterate=True
+                , cnn_context=image_embedding
+                )
 
-    #     self.image_embedding.apply()
+def main(mode, save_path):
 
-    #     self.sequence = 
-    #     self.generator.cost_matrix()
-    #     self.lookup.apply(chars)
-    #     return
+    image_dim = 784
+    embedding_dim = 300
+    mnistpoet = MNISTPoet(
+              image_dim=image_dim
+            , dim=embedding_dim
+            , biases_init=Constant(0.)
+            , weights_init=IsotropicGaussian(0.02)
+            )
 
-    # @application
-    # def generate(self, chars):
+    if mode == "train":
 
+        # theano.config.compute_test_value = 'warn' # Use 'warn' to activate this feature
 
-# theano.config.compute_test_value = 'warn' # Use 'warn' to activate this feature
+        # Tensors are sensitive as fuck to the dtype, especially in theano.scan
+        im = T.matrix('features')
+        chars = T.lmatrix('targets')
+        im.tag.test_value = np.zeros((2, 28*28), dtype='float32')
+        chars.tag.test_value = np.zeros((2, 5), dtype='int64')
 
-# Tensors are sensitive as fuck to the dtype, especially in theano.scan
-im = T.matrix('features')
-chars = T.lmatrix('targets')
-#chars_mask = T.matrix('targets_mask')
-im.tag.test_value = np.zeros((2, 28*28), dtype='float32')
-chars.tag.test_value = np.zeros((2, 5), dtype='int64')
+        mnistpoet.initialize()
 
-batch_size = 128
-image_dim = 784
-embedding_dim = 88
-mnistpoet = MNISTPoet(
-          image_dim=image_dim
-        , dim=embedding_dim
-        , biases_init=Constant(0.)
-        , weights_init=IsotropicGaussian(0.02)
-        )
-mnistpoet.initialize()
-dimchars = chars.dimshuffle(1, 0)
-cost = mnistpoet.cost(im, dimchars)
+        # dimchars is shape (sequences, batches)
+        dimchars = chars.dimshuffle(1, 0)
+        cost = mnistpoet.cost(im, dimchars)
+        cost.name = "sequence_log_likelihood"
 
-f = theano.function([im, chars], cost)
+        cg = ComputationGraph(cost)
 
-data = getTrainStream().get_epoch_iterator().next()
+        # # # # # # # # # # #
+        # Modeling Training #
+        # # # # # # # # # # #
+        model = Model(cost)
 
+        algorithm = GradientDescent(
+              cost=cost
+            , parameters=cg.parameters
+            , step_rule=AdaDelta()
+            )
+        main_loop = MainLoop(
+              model=model
+            , data_stream=getTrainStream()
+            , algorithm=algorithm
+            , extensions=[
+                  DataStreamMonitoring(
+                      [cost]
+                    , getTrainStream()
+                    , prefix='train')
+                , DataStreamMonitoring(
+                      [cost]
+                    , getTestStream()
+                    , prefix='test')
+                , Checkpoint(save_path, every_n_batches=500, save_separately=["model", "log"])
+                , ProgressBar()
+                , Printing()
+                , FinishAfter(after_n_epochs=3)
+                ]
+            )
+        main_loop.run()
+    #elif mode == "sample" or mode == "beam_search" or mode == "generate":
+        #im = T.matrix('features')
+        generated = mnistpoet.generate(im)
+        model = Model(generated)
+        #logger.info("Loading the Model...")
+        #model.set_parameter_values(load_parameter_values(save_path))
 
-costvalue = f(*data)
+        def generate(input_):
+            """Generate ouptut sequences for a given image
 
-ipdb.set_trace()
+            Returns
+            -------
+            outputs: list of lists
+                Trimmed output sequences
+            costs: list
+                The negative log-likelihood of generating the respective
+                sequences.
+            """
+            if mode == "beam_search":
+                print "No beamsearch available"
+                #samples, = VariableFilter(
+                #    bricks=[mnistpoet.generator], name="outputs")(
+                #        ComputationGraph(generated[1]))
+                #beam_search = BeamSearch(samples)
+                ## confused if chars: should be input_ or input_ should image
+                #outputs, costs = beam_search.search(
+                #    {chars: input_i
+            else:
+                _1, outputs, _2, _3, costs = (
+                    model.get_theano_function()(input_))
+                outputs = list(outputs.T)
+                costs = list(costs.T)
+                for i in range(len(outputs)):
+                    outputs[i] = list(outputs[i])
+                    try:
+                        # 0 was my stop character for MNIST alphabetic characters
+                        true_length = outputs[i].index(0)
+                    except ValueError:
+                        true_length = len(outputs[i])
+                    # true length helps me 'mask' stop characters in the cost calc
+                    outputs[i] = outputs[i][:true_length]
+                    costs[i] = costs[i][:true_length].sum()
+            return outputs, costs
 
-cg = ComputationGraph(cost)
+        ep = getTestStream(batch_size=1).get_epoch_iterator()
 
-ipdb.set_trace()
-# # # # # # # # # # #
-# Modeling Training #
-# # # # # # # # # # #
-from blocks.main_loop import MainLoop
-from blocks.model import Model
-from blocks.algorithms import GradientDescent, AdaDelta
-from blocks.extensions.monitoring import DataStreamMonitoring
-from blocks.extensions import Printing, ProgressBar, FinishAfter
+        while True:
+            # shape (1, image_features), (1, character sequence length)
+            mnist_im, mnist_txt_enc = ep.next()
+            # get the first one
+            #mnist_im = mnist_im[0]
+            mnist_txt_enc = mnist_txt_enc[0]
+            mnist_txt = "".join(code2char[code] for code in mnist_txt_enc)
+            print "Target: ", mnist_txt
+            message = ("Enter the number of samples\n" if mode == "sample"
+                        else "Enter the beam size\n")
+            batch_size = int(input(message))
+            samples, costs = generate(
+                np.repeat(np.array(mnist_im)[:, None],
+                          batch_size, axis=1)
+                    )
+            messages = []
+            for sample, cost in equizip(samples, costs):
+                message = "({})".format(cost)
+                message += "".join(code2char[code] for code in sample)
+                messages.append((cost, message))
+            messages.sort(key=operator.itemgetter(0), reverse=True)
+            for _, message in messages:
+                print(message)
 
-algorithm = GradientDescent(
-      cost=cost
-    , parameters=cg.parameters
-    , step_rule=AdaDelta()
-    )
-main_loop = MainLoop(
-      model=Model(cost)
-    , data_stream=getTrainStream()
-    , algorithm=algorithm
-    , extensions=[
-          DataStreamMonitoring(
-              [cost]
-            , getTrainStream()
-            , prefix='train')
-        , DataStreamMonitoring(
-              [cost]
-            , getTestStream()
-            , prefix='test')
-        , ProgressBar()
-        , Printing()
-        , FinishAfter(after_n_epochs=15)
-        ]
-    )
-main_loop.run()
+# # # # # # #
+#  Model IO #
+# # # # # # #
+
+import cPickle as pkl
+
+class ModelIO():
+
+    @staticmethod
+    def save(func, saveto):
+        pkl.dump(func, open('%s.pkl'%saveto, 'wb'))
+
+    @staticmethod
+    def load(saveto):
+        func = pkl.load(open('%s.pkl'%saveto, 'r'))
+        return func
+
+if __name__ == "__main__":
+    main("train", "predict-mnist/trainsandbox")
+    #main("sample", "predict-mnist/trainsandbox_model")
+
