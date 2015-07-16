@@ -1,6 +1,7 @@
 import ipdb
 import operator
 import logging
+import cPickle as pkl
 
 import theano
 import theano.tensor as T
@@ -81,7 +82,7 @@ def getDataStream(dataset, batch_size):
     return stream
 
 def getTrainStream(batch_size=200):
-    train = MNIST(('test',))
+    train = MNIST(('train',))
     return getDataStream(train, batch_size=batch_size)
 
 def getTestStream(batch_size=1000):
@@ -237,7 +238,6 @@ class MNISTPoet(Initializable):
     def generate(self, image_vects):
         # shape (batch, features)
         image_embedding = self.image_embedding.apply(image_vects)
-
         return self.generator.generate(
                   n_steps=5
                 , batch_size=image_embedding.shape[0]
@@ -245,7 +245,7 @@ class MNISTPoet(Initializable):
                 , cnn_context=image_embedding
                 )
 
-def main(mode, save_path):
+def main(mode, save_path, num_batches=300):
 
     image_dim = 784
     embedding_dim = 300
@@ -298,88 +298,135 @@ def main(mode, save_path):
                       [cost]
                     , getTestStream()
                     , prefix='test')
-                , Checkpoint(save_path, every_n_batches=500, save_separately=["model", "log"])
+                #, Checkpoint(save_path, every_n_batches=500, save_separately=["model", "log"])
+                #, Checkpoint(save_path, every_n_batches=500)
                 , ProgressBar()
                 , Printing()
-                , FinishAfter(after_n_epochs=3)
+                , FinishAfter(after_n_batches=num_batches)
                 ]
             )
         main_loop.run()
-    #elif mode == "sample" or mode == "beam_search" or mode == "generate":
-        #im = T.matrix('features')
-        generated = mnistpoet.generate(im)
-        model = Model(generated)
-        #logger.info("Loading the Model...")
-        #model.set_parameter_values(load_parameter_values(save_path))
 
-        def generate(input_):
-            """Generate ouptut sequences for a given image
-
-            Returns
-            -------
-            outputs: list of lists
-                Trimmed output sequences
-            costs: list
-                The negative log-likelihood of generating the respective
-                sequences.
-            """
-            if mode == "beam_search":
-                print "No beamsearch available"
-                #samples, = VariableFilter(
-                #    bricks=[mnistpoet.generator], name="outputs")(
-                #        ComputationGraph(generated[1]))
-                #beam_search = BeamSearch(samples)
-                ## confused if chars: should be input_ or input_ should image
-                #outputs, costs = beam_search.search(
-                #    {chars: input_i
-            else:
-                _1, outputs, _2, _3, costs = (
-                    model.get_theano_function()(input_))
-                outputs = list(outputs.T)
-                costs = list(costs.T)
-                for i in range(len(outputs)):
-                    outputs[i] = list(outputs[i])
-                    try:
-                        # 0 was my stop character for MNIST alphabetic characters
-                        true_length = outputs[i].index(0)
-                    except ValueError:
-                        true_length = len(outputs[i])
-                    # true length helps me 'mask' stop characters in the cost calc
-                    outputs[i] = outputs[i][:true_length]
-                    costs[i] = costs[i][:true_length].sum()
-            return outputs, costs
-
+        # Training is done; save the generator function with the learned parameters
+        sample = mnistpoet.generate(im)
+        #f_gen = theano.function([im], sample)
+        f_gen = ComputationGraph(sample).get_theano_function()
         ep = getTestStream(batch_size=1).get_epoch_iterator()
-
         while True:
-            # shape (1, image_features), (1, character sequence length)
-            mnist_im, mnist_txt_enc = ep.next()
-            # get the first one
-            #mnist_im = mnist_im[0]
-            mnist_txt_enc = mnist_txt_enc[0]
-            mnist_txt = "".join(code2char[code] for code in mnist_txt_enc)
-            print "Target: ", mnist_txt
-            message = ("Enter the number of samples\n" if mode == "sample"
-                        else "Enter the beam size\n")
+            im_vects, txt_enc = ep.next()
+            mnist_txt = "".join(code2char[code] for code in txt_enc[0])
+            print "\nTrying for: ", mnist_txt
+            message=("Number Tries to generate correct text?")
             batch_size = int(input(message))
-            samples, costs = generate(
-                np.repeat(np.array(mnist_im)[:, None],
-                          batch_size, axis=1)
+            states, outputs, costs = f_gen(
+                    np.repeat(im_vects, batch_size, 0)
                     )
+            outputs = list(outputs.T)
+            costs = list(costs.T)
+            for i in range(len(outputs)):
+                outputs[i] = list(outputs[i])
+                try:
+                    # 0 was my stop character for MNIST alphabetic
+                    true_length = outputs[i].index(0)
+                except ValueError:
+                    # full sequence length
+                    true_length = len(outputs[i])
+                outputs[i] = outputs[i][:true_length]
+                costs[i] = costs[i][:true_length].sum()
             messages = []
-            for sample, cost in equizip(samples, costs):
-                message = "({})".format(cost)
+            for sample, cost in equizip(outputs, costs):
+                message = "({0:0.3f}) ".format(cost)
                 message += "".join(code2char[code] for code in sample)
                 messages.append((cost, message))
             messages.sort(key=operator.itemgetter(0), reverse=True)
             for _, message in messages:
                 print(message)
+        ModelIO.save(f_gen, 'predict-mnist/f_gen')
+#    elif mode == "sample" or mode == "beam_search" or mode == "generate":
+#        im = T.matrix('features')
+#        #mnistpoet.initialize()
+#        generated = mnistpoet.generate(im)
+#        model = Model(generated)
+#        logger.info("Loading the Model...")
+#        pkl.load(open(save_path), 'rb')
+#        #model.set_parameter_values(load_parameter_values(save_path))
+#
+#        def generate(input_):
+#            """Generate ouptut sequences for a given image
+#
+#            Returns
+#            -------
+#            outputs: list of lists
+#                Trimmed output sequences
+#            costs: list
+#                The negative log-likelihood of generating the respective
+#                sequences.
+#            """
+#            if mode == "beam_search":
+#                print "No beamsearch available"
+#                #samples, = VariableFilter(
+#                #    bricks=[mnistpoet.generator], name="outputs")(
+#                #        ComputationGraph(generated[1]))
+#                #beam_search = BeamSearch(samples)
+#                ## confused if chars: should be input_ or input_ should image
+#                #outputs, costs = beam_search.search(
+#                #    {chars: input_i
+#            else:
+#                import ipdb; ipdb.set_trace();
+#                _1, outputs, _2, _3, costs = (
+#                    model.get_theano_function()(input_))
+#                outputs = list(outputs.T)
+#                costs = list(costs.T)
+#                for i in range(len(outputs)):
+#                    outputs[i] = list(outputs[i])
+#                    try:
+#                        # 0 was my stop character for MNIST alphabetic characters
+#                        true_length = outputs[i].index(0)
+#                    except ValueError:
+#                        true_length = len(outputs[i])
+#                    # true length helps me 'mask' stop characters in the cost calc
+#                    outputs[i] = outputs[i][:true_length]
+#                    costs[i] = costs[i][:true_length].sum()
+#            return outputs, costs
+#        #main_loop = pkl.load(open(save_path, 'rb'))
+#        #generator = main_loop.model
+#        f_gen = ModelIO.load('predict-mnist/f_gen')
+#        # get one example at a time to evaluate
+#        ep = getTestStream(batch_size=1).get_epoch_iterator()
+#
+#        while True:
+#            # shape (1, image_features), (1, character sequence length)
+#            mnist_im, mnist_txt_enc = ep.next()
+#            # get the first one
+#            #mnist_im = mnist_im[0]
+#            mnist_txt_enc = mnist_txt_enc[0]
+#            mnist_txt = "".join(code2char[code] for code in mnist_txt_enc)
+#            print "Target: ", mnist_txt
+#            message = ("Enter the number of samples\n" if mode == "sample"
+#                        else "Enter the beam size\n")
+#            batch_size = int(input(message))
+#            f_gen_out = f_gen(mnist_im)
+#            #sample = ComputationGraph(generator.generate(mnist_im)).get_theano_function()
+#            #states, outputs, costs = [data[:, 0] for data in sample()]
+#
+#            import ipdb; ipdb.set_trace();
+#            samples, costs = generate(
+#                    np.repeat(np.array(mnist_im),
+#                          batch_size, axis=0)
+#                    )
+#            messages = []
+#            for sample, cost in equizip(samples, costs):
+#                message = "({})".format(cost)
+#                message += "".join(code2char[code] for code in sample)
+#                messages.append((cost, message))
+#            messages.sort(key=operator.itemgetter(0), reverse=True)
+#            for _, message in messages:
+#                print(message)
 
 # # # # # # #
 #  Model IO #
 # # # # # # #
 
-import cPickle as pkl
 
 class ModelIO():
 
@@ -393,6 +440,6 @@ class ModelIO():
         return func
 
 if __name__ == "__main__":
-    main("train", "predict-mnist/trainsandbox")
-    #main("sample", "predict-mnist/trainsandbox_model")
+    main("train", "predict-mnist/pklmain_loop")
+    main("sample", "predict-mnist/pklmain_loop")
 
