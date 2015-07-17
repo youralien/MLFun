@@ -335,6 +335,11 @@ def trainend2end(
         print e
     ModelEval.predict(f_gen, X=teX, Y=teY)
 
+def sampleend2end():
+    print "Loading Model..."
+    f_gen = ModelIO.load('/home/luke/datasets/coco/predict/end2end_f_gen')
+    ModelEval.predict(f_gen)
+
 def traindecoder(
       sources = ("image_vects", "word_vects")
     , sources_k = ("image_vects_k", "word_vects_k")
@@ -580,7 +585,9 @@ class ModelEval():
             X=X, Y=Y, sources=('X', 'Y'), batch_size=1).get_epoch_iterator()
         while True:
             im_vects, txt_enc = ep.next()
-            txt = " ".join(vect.inverse_transform[code] for code in txt_enc[0])
+            print "shapes: ", im_vects.shape, txt_enc.shape
+            import ipdb; ipdb.set_trace();
+            txt = " ".join(vect.inverse_transform(txt_enc))
             print "\nTrying for: ", txt
             message=("Number of attempts to generate correct text? ")
             batch_size = int(input(message))
@@ -601,8 +608,10 @@ class ModelEval():
                 costs[i] = costs[i][:true_length].sum()
             messages = []
             for sample, cost in equizip(outputs, costs):
+                # vect.inverse_transform needs a shape (seq, 1) array
+                sample = np.array(sample).reshape(-1, 1)
                 message = "({0:0.3f}) ".format(cost)
-                message += " ".join(vect.inverse_transform[code] for code in sample)
+                message += " ".join(vect.inverse_transform(sample))
                 messages.append((cost, message))
             messages.sort(key=operator.itemgetter(0), reverse=True)
             for _, message in messages:
@@ -647,4 +656,5 @@ if __name__ == '__main__':
     # foo()
     # traindecoder()
     # trainencoder()
-    trainend2end()
+    # trainend2end()
+    sampleend2end()
