@@ -42,7 +42,14 @@ from utils import dict2json, vStackMatrices, DecimalEncoder
 # # # # # # # # # # #
 
 # global vectorizer
-vect = Tokenizer(min_df=2, max_features=50000)
+def prepVect(min_df=2, max_features=50000, n_captions=5):
+    trX, trY, teX, teY = coco(mode='full', n_captions=n_captions)
+    vect = Tokenizer(min_df=min_df, max_features=max_features)
+    sampleCaptions = DataETL.sampleCaptions
+    vect.fit(sampleCaptions(trY, n_captions))
+    return vect
+
+prepVect()
 
 class DataETL():
 
@@ -74,9 +81,6 @@ class DataETL():
         trX_k, trY_k = (X, Y)
 
         sampleCaptions = DataETL.sampleCaptions
-
-        # vectorizer
-        vect.fit(sampleCaptions(trY, n_captions))
 
         # Transforms
         trXt=lambda x: floatX(x)
