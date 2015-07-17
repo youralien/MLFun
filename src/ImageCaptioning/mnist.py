@@ -89,8 +89,9 @@ from modelbuilding import GatedRecurrentWithInitialState
 
 class MNISTPoet(Initializable):
 
-    def __init__(self, image_dim, dim, alphabet_size=26, **kwargs):
+    def __init__(self, image_dim, dim, alphabet_size=26, max_sequence_length=5, **kwargs):
         super(MNISTPoet, self).__init__(**kwargs)
+        self.max_sequence_length = max_sequence_length
 
         # make image dimension of the embedding, so we can initialize
         # the hidden state with it
@@ -144,7 +145,7 @@ class MNISTPoet(Initializable):
         # shape (batch, features)
         image_embedding = self.image_embedding.apply(image_vects)
         return self.generator.generate(
-                  n_steps=5
+                  n_steps=self.max_sequence_length
                 , batch_size=image_embedding.shape[0]
                 , iterate=True
                 , cnn_context=image_embedding
@@ -277,6 +278,6 @@ class ModelIO():
         return func
 
 if __name__ == "__main__":
-    main("train")
+    #main("train")
     main("sample")
 

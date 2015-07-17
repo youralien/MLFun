@@ -17,10 +17,8 @@ from blocks.main_loop import MainLoop
 from blocks.model import Model
 from blocks.algorithms import GradientDescent, AdaDelta
 from blocks.extensions.monitoring import DataStreamMonitoring
-from blocks.extensions import Printing, ProgressBar, FinishAfter
-from blocks.extensions.training import TrackTheBest
-from blocks.extensions.predicates import OnLogRecord
-from blocks.extensions.saveload import Checkpoint
+from blocks.extensions import Printing
+from blocks.extensions.stopping import FinishIfNoImprovementAfter
 
 from fuel.transformers import Merge
 
@@ -268,7 +266,7 @@ def trainend2end(
     Like how we did it with MNIST
     """
     # data should not be shuffled, as there is semantics in their placement
-    trX, teX, trY, teY = coco(mode="dev", batch_size=batch_size, n_captions=n_captions)
+    trX, teX, trY, teY = coco(mode="full", batch_size=batch_size, n_captions=n_captions)
     prestream = DataETL.getTokenizedStream(trX, trY, sources=sources,
         batch_size=batch_size, n_captions=n_captions)
 
@@ -282,8 +280,9 @@ def trainend2end(
           image_dim=4096
         , dim=embedding_dim
         , alphabet_size=vect.n_features
+        , max_sequence_length=30
         , biases_init=Constant(0.)
-        , weights_init=Uniform(width=0.08)
+        , weights_init=IsotropicGaussian(0.02)
         )
     show_and_tell.initialize()
     cost = show_and_tell.cost(image_vects, word_tokens)
@@ -312,8 +311,9 @@ def trainend2end(
                   , DataETL.getTokenizedStream(teX, teY, sources=sources,
                       batch_size=batch_size, n_captions=n_captions)
                   , prefix='test')
-            , ProgressBar()
             , Printing()
+            , FinishIfNoImprovementAfter(notification_name="test_seq_log_likelihood",
+                epochs=3)
             ]
         )
     main_loop.run()
@@ -352,7 +352,7 @@ def traindecoder(
             batch_size=batch_size, n_captions=n_captions)
     batch = stream.get_epoch_iterator().next()
     f_emb = ModelIO.load('/home/luke/datasets/coco/predict/fullencoder_maxfeatures.50000')
-
+    import ipdb
     ipdb.set_trace()
 
     # # # # # # # # # # #
@@ -648,5 +648,5 @@ if __name__ == '__main__':
     # foo()
     # traindecoder()
     # trainencoder()
-    # trainend2end()
-    sampleend2end()
+    trainend2end()
+    #sampleend2end()
