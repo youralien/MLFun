@@ -41,27 +41,26 @@ from utils import dict2json, vStackMatrices, DecimalEncoder
 # DataPreprocessing #
 # # # # # # # # # # #
 
-# global vectorizer
+def sampleCaptions(ymb, K=1):
+    """ymb = minibatch of captions
+    it samples K captions from the available list of n captions
+    """
+    sampled_captions = []
+    for captions_of_an_img in ymb:
+        sampled_captions.extend(py_rng.sample(captions_of_an_img, K))
+    return sampled_captions
+
 def prepVect(min_df=2, max_features=50000, n_captions=5):
-    trX, trY, teX, teY = coco(mode='full', n_captions=n_captions)
+    print "prepping the Word Tokenizer..."
+    _0, _1, trY, _3 = coco(mode='full', n_captions=n_captions)
     vect = Tokenizer(min_df=min_df, max_features=max_features)
-    sampleCaptions = DataETL.sampleCaptions
     vect.fit(sampleCaptions(trY, n_captions))
     return vect
 
-prepVect()
+# global vectorizer
+vect = prepVect()
 
 class DataETL():
-
-    @staticmethod
-    def sampleCaptions(ymb, K=1):
-        """ymb = minibatch of captions
-        it samples K captions from the available list of n captions
-        """
-        sampled_captions = []
-        for captions_of_an_img in ymb:
-            sampled_captions.extend(py_rng.sample(captions_of_an_img, K))
-        return sampled_captions
 
     @staticmethod
     def getFinalStream(X, Y, sources, sources_k, batch_size=128, embedding_dim=300,
@@ -79,8 +78,6 @@ class DataETL():
         """
         trX, trY = (X, Y)
         trX_k, trY_k = (X, Y)
-
-        sampleCaptions = DataETL.sampleCaptions
 
         # Transforms
         trXt=lambda x: floatX(x)
@@ -137,11 +134,6 @@ class DataETL():
         contrastive examples either.
         """
         trX, trY = (X, Y)
-
-        sampleCaptions = DataETL.sampleCaptions
-
-        # vectorizer
-        vect.fit(sampleCaptions(trY, n_captions))
 
         # Transforms
         trXt=lambda x: floatX(x)
@@ -227,8 +219,6 @@ def trainencoder(
 
     cg = ComputationGraph(cost)
 
-    import ipdb
-    ipdb.set_trace()
     # # # # # # # # # # #
     # Modeling Training #
     # # # # # # # # # # #
@@ -363,7 +353,6 @@ def traindecoder(
     batch = stream.get_epoch_iterator().next()
     f_emb = ModelIO.load('/home/luke/datasets/coco/predict/fullencoder_maxfeatures.50000')
 
-    import ipdb
     ipdb.set_trace()
 
     # # # # # # # # # # #
@@ -590,7 +579,6 @@ class ModelEval():
         while True:
             im_vects, txt_enc = ep.next()
             print "shapes: ", im_vects.shape, txt_enc.shape
-            import ipdb; ipdb.set_trace();
             txt = " ".join(vect.inverse_transform(txt_enc))
             print "\nTrying for: ", txt
             message=("Number of attempts to generate correct text? ")
