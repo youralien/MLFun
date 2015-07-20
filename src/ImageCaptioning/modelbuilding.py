@@ -9,6 +9,73 @@ from blocks.bricks.recurrent import LSTM, GatedRecurrent, recurrent
 from blocks.utils import shared_floatx
 from blocks.bricks import Initializable, Linear
 from blocks.bricks.lookup import LookupTable
+from blocks.bricks.sequence_generators import (
+    SequenceGenerator, Readout, SoftmaxEmitter, LookupFeedback)
+from blocks.monitoring import aggregation
+
+class ShowAndTell(Initializable):
+
+    def __init__(self, image_dim, dim, dictionary_size, max_sequence_length, **kwargs):
+        super(ShowAndTell, self).__init__(**kwargs)
+        self.max_sequence_length = max_sequence_length
+
+        # make image dimension of the embedding, so we can initialize
+        # the hidden state with it
+        image_embedding = Linear(
+              input_dim=image_dim
+            , output_dim=dim
+            , name='image_embedding'
+            )
+
+        transition = GatedRecurrentWithInitialState(
+            name='transition', dim=dim
+            )
+
+        readout = Readout(
+              readout_dim=dictionary_size
+            , source_names=["states"]
+            , emitter=SoftmaxEmitter(name='emitter')
+            , feedback_brick=LookupFeedback(num_outputs=dictionary_size, feedback_dim=dim)
+            , name="readout"
+            )
+
+        generator = SequenceGenerator(
+              readout=readout
+            , transition=transition
+            )
+
+        self.image_embedding = image_embedding
+        self.transition = transition
+        self.generator = generator
+
+        self.children = [
+                  self.image_embedding
+                , self.transition
+                , self.generator
+                , ]
+
+    @application(inputs=["image_vects", "chars"], outputs=['out'])
+    def cost(self, image_vects, chars):
+        # shape (batch, features)
+        image_embedding = self.image_embedding.apply(image_vects)
+
+        cost = aggregation.mean(
+              self.generator.cost_matrix(
+                chars, cnn_context=image_embedding).sum()
+            , chars.shape[1]
+            )
+        return cost
+
+    @application
+    def generate(self, image_vects):
+        # shape (batch, features)
+        image_embedding = self.image_embedding.apply(image_vects)
+        return self.generator.generate(
+                  n_steps=self.max_sequence_length
+                , batch_size=image_embedding.shape[0]
+                , iterate=True
+                , cnn_context=image_embedding
+                )
 
 class Encoder(Initializable):
 

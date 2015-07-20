@@ -74,11 +74,13 @@ def prepVect(min_df=2, max_features=50000, n_captions=5):
 
 # global vectorizer
 try:
-    import ipdb; ipdb.set_trace();
-    vect = ModelIO.load('tokenizer')
+    vect = ModelIO.load('tokenizer_reddit')
     print "Tokenizer loaded from file."
 except:
     vect = prepVect()
+    ModelIO.save(vect, 'tokenizer_coco_train2014')
+    print "Saved this tokenizer for future use."
+
 
 class DataETL():
 
@@ -297,11 +299,11 @@ def trainend2end(
     image_vects.tag.test_value = np.zeros((2, 4096), dtype='float32')
     word_tokens.tag.test_value = np.zeros((2, 15), dtype='int64')
 
-    from mnist import MNISTPoet
-    show_and_tell = MNISTPoet(
+    from modelbuilding import ShowAndTell
+    show_and_tell = ShowAndTell(
           image_dim=4096
         , dim=embedding_dim
-        , alphabet_size=vect.n_features
+        , dictionary_size=vect.n_features
         , max_sequence_length=30
         , biases_init=Constant(0.)
         , weights_init=IsotropicGaussian(0.02)
@@ -344,7 +346,7 @@ def trainend2end(
     sample = show_and_tell.generate(image_vects)
     f_gen = ComputationGraph(sample).get_theano_function()
     try:
-        ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30_embeddingdim.4096.pkl')
+        ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30_embeddingdim.1024.pkl')
         print "It saved! Thanks pickle!"
     except Exception, e:
         print "Fuck pickle and move on with your life :)"
@@ -653,5 +655,5 @@ if __name__ == '__main__':
     # foo()
     # traindecoder()
     # trainencoder()
-    #trainend2end()
-    sampleend2end()
+    trainend2end(embedding_dim=1024)
+    # sampleend2end()
