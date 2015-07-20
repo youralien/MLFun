@@ -15,7 +15,7 @@ from blocks.graph import ComputationGraph
 # blocks model training
 from blocks.main_loop import MainLoop
 from blocks.model import Model
-from blocks.algorithms import GradientDescent, AdaDelta
+from blocks.algorithms import GradientDescent, Adam
 from blocks.extensions.monitoring import DataStreamMonitoring
 from blocks.extensions import Printing
 from blocks.extensions.stopping import FinishIfNoImprovementAfter
@@ -34,6 +34,23 @@ from modelbuilding import Encoder, l2norm
 from dataset import (coco, FoxyDataStream, GloveTransformer,
     ShuffleBatch, FoxyIterationScheme, loadFeaturesTargets, fillOutFilenames)
 from utils import dict2json, vStackMatrices, DecimalEncoder
+
+# # # # # # #
+#  Model IO #
+# # # # # # #
+
+import cPickle as pkl
+
+class ModelIO():
+
+    @staticmethod
+    def save(func, saveto):
+        pkl.dump(func, open('%s.pkl'%saveto, 'wb'))
+
+    @staticmethod
+    def load(saveto):
+        func = pkl.load(open('%s.pkl'%saveto, 'r'))
+        return func
 
 # # # # # # # # # # #
 # DataPreprocessing #
@@ -56,7 +73,12 @@ def prepVect(min_df=2, max_features=50000, n_captions=5):
     return vect
 
 # global vectorizer
-vect = prepVect()
+try:
+    import ipdb; ipdb.set_trace();
+    vect = ModelIO.load('tokenizer')
+    print "Tokenizer loaded from file."
+except:
+    vect = prepVect()
 
 class DataETL():
 
@@ -224,7 +246,7 @@ def trainencoder(
     algorithm = GradientDescent(
           cost=cost
         , parameters=cg.parameters
-        , step_rule=AdaDelta()
+        , step_rule=Adam()
         )
     main_loop = MainLoop(
           model=Model(cost)
@@ -293,7 +315,7 @@ def trainend2end(
     algorithm = GradientDescent(
           cost=cost
         , parameters=cg.parameters
-        , step_rule=AdaDelta()
+        , step_rule=Adam()
         )
     main_loop = MainLoop(
           model=model
@@ -322,7 +344,7 @@ def trainend2end(
     sample = show_and_tell.generate(image_vects)
     f_gen = ComputationGraph(sample).get_theano_function()
     try:
-        ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/end2end_f_gen')
+        ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30_embeddingdim.4096.pkl')
         print "It saved! Thanks pickle!"
     except Exception, e:
         print "Fuck pickle and move on with your life :)"
@@ -331,7 +353,7 @@ def trainend2end(
 
 def sampleend2end():
     print "Loading Model..."
-    f_gen = ModelIO.load('/home/luke/datasets/coco/predict/end2end_f_gen')
+    f_gen = ModelIO.load('/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30')
     ModelEval.predict(f_gen)
 
 def traindecoder(
@@ -362,7 +384,7 @@ def traindecoder(
 #    algorithm = GradientDescent(
 #          cost=cost
 #        , parameters=cg.parameters
-#        , step_rule=AdaDelta()
+#        , step_rule=Adam()
 #        )
 #    main_loop = MainLoop(
 #          model=Model(cost)
@@ -389,22 +411,6 @@ def traindecoder(
 #        )
 #    main_loop.run()
 
-# # # # # # #
-#  Model IO #
-# # # # # # #
-
-import cPickle as pkl
-
-class ModelIO():
-
-    @staticmethod
-    def save(func, saveto):
-        pkl.dump(func, open('%s.pkl'%saveto, 'wb'))
-
-    @staticmethod
-    def load(saveto):
-        func = pkl.load(open('%s.pkl'%saveto, 'r'))
-        return func
 
 # # # # # # # # # # #
 # Model Evaluation  #
@@ -578,7 +584,6 @@ class ModelEval():
             X=X, Y=Y, sources=('X', 'Y'), batch_size=1).get_epoch_iterator()
         while True:
             im_vects, txt_enc = ep.next()
-            print "shapes: ", im_vects.shape, txt_enc.shape
             txt = " ".join(vect.inverse_transform(txt_enc))
             print "\nTrying for: ", txt
             message=("Number of attempts to generate correct text? ")
@@ -648,5 +653,5 @@ if __name__ == '__main__':
     # foo()
     # traindecoder()
     # trainencoder()
-    trainend2end()
-    #sampleend2end()
+    #trainend2end()
+    sampleend2end()
