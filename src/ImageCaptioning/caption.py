@@ -305,6 +305,7 @@ def trainend2end(
         , dim=embedding_dim
         , dictionary_size=vect.n_features
         , max_sequence_length=30
+        , lookup_file='glove_lookup_53454.npy'
         , biases_init=Constant(0.)
         , weights_init=IsotropicGaussian(0.02)
         )
@@ -655,5 +656,5 @@ if __name__ == '__main__':
     # foo()
     # traindecoder()
     # trainencoder()
-    trainend2end(embedding_dim=1024)
+    trainend2end(batch_size=32)
     # sampleend2end()

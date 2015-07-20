@@ -15,7 +15,8 @@ from blocks.monitoring import aggregation
 
 class ShowAndTell(Initializable):
 
-    def __init__(self, image_dim, dim, dictionary_size, max_sequence_length, **kwargs):
+    def __init__(self, image_dim, dim, dictionary_size, max_sequence_length,
+                 lookup_file=None, **kwargs):
         super(ShowAndTell, self).__init__(**kwargs)
         self.max_sequence_length = max_sequence_length
 
@@ -31,11 +32,22 @@ class ShowAndTell(Initializable):
             name='transition', dim=dim
             )
 
+        if lookup_file:
+            lookup = PretrainedLookupTable(lookup_file)
+            feedback = PretrainedLookupFeedback(
+                lookup=lookup, num_outputs=dictionary_size,feedback_dim=dim)
+            print """
+                  Warn: The pretrained lookup table you are supplying should
+                  match the vectorizer loaded, which it was trained with.
+                  """
+        else:
+            feedback = LookupFeedback(num_outputs=dictionary_size, feedback_dim=dim)
+
         readout = Readout(
               readout_dim=dictionary_size
             , source_names=["states"]
             , emitter=SoftmaxEmitter(name='emitter')
-            , feedback_brick=LookupFeedback(num_outputs=dictionary_size, feedback_dim=dim)
+            , feedback_brick=feedback
             , name="readout"
             )
 
@@ -160,6 +172,26 @@ class PretrainedLookupTable(LookupTable):
 
     def _initialize(self):
         pass
+
+class PretrainedLookupFeedback(LookupFeedback):
+    """A feedback brick for the case when readout are integers.
+    Stores and retrieves distributed representations of integers.
+    """
+    def __init__(self, lookup, num_outputs, feedback_dim, **kwargs):
+        super(PretrainedLookupFeedback, self).__init__(**kwargs)
+        self.num_outputs = num_outputs
+        self.feedback_dim = feedback_dim
+
+        self.lookup = lookup
+        self.children = [self.lookup]
+
+    @application
+    def feedback(self, outputs):
+        assert self.output_dim == 0
+        return self.lookup.apply(outputs)
+
+    def get_dim(self, name):
+        return super(PretrainedLookupFeedback, self).get_dim(name)
 
 # l2 norm, row-wise
 def l2norm(X):
