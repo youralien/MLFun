@@ -2,15 +2,13 @@
 # Modeling Building #
 # # # # # # # # # # #
 from theano import tensor
-
+import numpy as np
 from blocks.initialization import IsotropicGaussian, Constant
 from blocks.bricks.base import application, lazy
 from blocks.bricks.recurrent import LSTM, GatedRecurrent, recurrent
+from blocks.utils import shared_floatx
 from blocks.bricks import Initializable, Linear
 from blocks.bricks.lookup import LookupTable
-from blocks.bricks.sequence_generators import (
-    SequenceGenerator, Readout, AbstractEmitter, TrivialFeedback)
-from blocks.monitoring import aggregation
 
 class Encoder(Initializable):
 
@@ -79,6 +77,23 @@ class GatedRecurrentWithInitialState(GatedRecurrent):
         cnn_context = kwargs['cnn_context']
         return [cnn_context]
 
+class PretrainedLookupTable(LookupTable):
+    def __init__(self, npy_file, **kwargs):
+        super(PretrainedLookupTable, self).__init__(self)
+        self.dim = 0
+        self.length = 0
+        self.npy_file = npy_file
+        self.children = []
+
+    def _allocate(self):
+        data = np.load(self.npy_file)
+        self.length, self.dim = data.shape
+        self.parameters.append(
+                shared_floatx(data, name="W"))
+
+    def _initialize(self):
+        pass
+
 # l2 norm, row-wise
 def l2norm(X):
     norm = tensor.sqrt(tensor.pow(X, 2).sum(1))
@@ -88,7 +103,6 @@ def l2norm(X):
 if __name__ == '__main__':
     import theano
     import theano.tensor as T
-    import numpy as np
 
     def test_encoder():
         image_vects = T.matrix('image_vects')
