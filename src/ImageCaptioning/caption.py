@@ -31,7 +31,7 @@ from foxhound.rng import py_rng
 
 # local imports
 from modelbuilding import Encoder, l2norm
-from dataset import (coco, FoxyDataStream, GloveTransformer,
+from dataset import (coco, cocoXYFilenames, FoxyDataStream, GloveTransformer,
     ShuffleBatch, FoxyIterationScheme, loadFeaturesTargets, fillOutFilenames)
 from utils import dict2json, vStackMatrices, DecimalEncoder
 
@@ -338,7 +338,7 @@ def trainend2end(
                   , prefix='test')
             , Printing()
             , FinishIfNoImprovementAfter(notification_name="test_seq_log_likelihood",
-                epochs=3)
+                epochs=1)
             ]
         )
     main_loop.run()
@@ -347,17 +347,17 @@ def trainend2end(
     sample = show_and_tell.generate(image_vects)
     f_gen = ComputationGraph(sample).get_theano_function()
     try:
-        ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30_embeddingdim.1024.pkl')
+        ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30_embeddingdim.300_glove')
         print "It saved! Thanks pickle!"
     except Exception, e:
         print "Fuck pickle and move on with your life :)"
         print e
-    ModelEval.predict(f_gen, X=teX, Y=teY)
+    ModelEval.predict(f_gen)
 
 def sampleend2end():
     print "Loading Model..."
-    f_gen = ModelIO.load('/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30')
-    ModelEval.predict(f_gen)
+    f_gen = ModelIO.load('/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30_embeddingdim.300_glove')
+    ModelEval.predict(f_gen, savepath='/home/luke/datasets/coco/predict/generate_captions.json')
 
 def traindecoder(
       sources = ("image_vects", "word_vects")
@@ -578,44 +578,54 @@ class ModelEval():
         return relevant_captions
 
     @staticmethod
-    def predict(f_gen, X=None, Y=None):
-        if X is None or Y is None:
-            trX, teX, trY, teY = coco(mode='dev')
-            X = teX
-            Y = teY
+    def predict(f_gen, X=None, Y=None, filenames=None, savepath=None):
+        if X is None or Y is None or filenames is None:
+            X, Y, filenames = cocoXYFilenames(dataType='val2014')
         ep = DataETL.getTokenizedStream(
             X=X, Y=Y, sources=('X', 'Y'), batch_size=1).get_epoch_iterator()
-        while True:
-            im_vects, txt_enc = ep.next()
-            txt = " ".join(vect.inverse_transform(txt_enc))
-            print "\nTrying for: ", txt
-            message=("Number of attempts to generate correct text? ")
-            batch_size = int(input(message))
-            states, outputs, costs = f_gen(
-                    np.repeat(im_vects, batch_size, 0)
-                    )
-            outputs = list(outputs.T)
-            costs = list(costs.T)
-            for i in range(len(outputs)):
-                outputs[i] = list(outputs[i])
-                try:
-                    # 0 is my stop character, via foxhound Tokenizer
-                    true_length = outputs[i].index(0)
-                except ValueError:
-                    # full sequence length
-                    true_length = len(outputs[i])
-                outputs[i] = outputs[i][:true_length]
-                costs[i] = costs[i][:true_length].sum()
-            messages = []
-            for sample, cost in equizip(outputs, costs):
-                # vect.inverse_transform needs a shape (seq, 1) array
-                sample = np.array(sample).reshape(-1, 1)
-                message = "({0:0.3f}) ".format(cost)
-                message += " ".join(vect.inverse_transform(sample))
-                messages.append((cost, message))
-            messages.sort(key=operator.itemgetter(0), reverse=True)
-            for _, message in messages:
-                print(message)
+        if savepath:
+            generated_captions = {}
+
+        for filename in filenames:
+            try:
+                # No good way to make sure the filename is matching
+                im_vects, txt_enc = ep.next()
+                txt = " ".join(vect.inverse_transform(txt_enc))
+                print "\nTrying for: ", txt
+                message=("Number of attempts to generate correct text? ")
+                batch_size = int(input(message))
+                states, outputs, costs = f_gen(
+                        np.repeat(im_vects, batch_size, 0)
+                        )
+                outputs = list(outputs.T)
+                costs = list(costs.T)
+                for i in range(len(outputs)):
+                    outputs[i] = list(outputs[i])
+                    try:
+                        # 0 is my stop character, via foxhound Tokenizer
+                        true_length = outputs[i].index(0)
+                    except ValueError:
+                        # full sequence length
+                        true_length = len(outputs[i])
+                    outputs[i] = outputs[i][:true_length]
+                    costs[i] = costs[i][:true_length].sum()
+                messages = []
+                for sample, cost in equizip(outputs, costs):
+                    # vect.inverse_transform needs a shape (seq, 1) array
+                    sample = np.array(sample).reshape(-1, 1)
+                    message = "({0:0.3f}) ".format(cost)
+                    message += " ".join(vect.inverse_transform(sample))
+                    cost = decimal.Decimal(float(cost))
+                    messages.append((cost, message))
+                messages.sort(key=operator.itemgetter(0), reverse=True)
+                for _, message in messages:
+                    print(message)
+                if savepath:
+                    generated_captions[filename] = messages
+            except KeyboardInterrupt:
+                if savepath:
+                    dict2json(generated_captions, savepath, cls=DecimalEncoder)
+                return
 
 if __name__ == '__main__':
     def test_samplerankcaptions():
@@ -656,5 +666,5 @@ if __name__ == '__main__':
     # foo()
     # traindecoder()
     # trainencoder()
-    trainend2end(batch_size=32)
-    # sampleend2end()
+    # trainend2end(batch_size=32)
+    sampleend2end()

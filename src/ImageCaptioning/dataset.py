@@ -35,6 +35,29 @@ def coco(mode="dev", batch_size=64, n_captions=1):
 
     return trX, teX, trY, teY
 
+def cocoXYFilenames(n_captions=5, dataType='val2014'):
+    """Helps when you are evaluating and want the filenames
+    associated with the features and target variables
+
+    Parameters
+    ----------
+    n_captions: integer
+        how many captions to load for the image
+
+    dataType: 'val2014' or 'train2014'
+
+    Returns
+    -------
+    X: the features
+    Y: the targets
+    filenames: the filenames corresponding to each
+    """
+    fns = os.listdir("%s/features/%s"%(dataDir, dataType))
+    fns = shuffle(fns)
+    X, Y = loadFeaturesTargets(fns, dataType, n_captions)
+
+    return X, Y, fns
+
 def loadFeaturesTargets(fns, dataType, n_captions=1):
     """
     Note: filenames should come from the same type of dataType.
