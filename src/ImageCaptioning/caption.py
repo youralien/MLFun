@@ -19,6 +19,8 @@ from blocks.algorithms import GradientDescent, Adam
 from blocks.extensions.monitoring import DataStreamMonitoring
 from blocks.extensions import Printing
 from blocks.extensions.stopping import FinishIfNoImprovementAfter
+from blocks.filter import VariableFilter
+from blocks.search import BeamSearch
 
 from fuel.transformers import Merge
 
@@ -74,7 +76,8 @@ def prepVect(min_df=2, max_features=50000, n_captions=5):
 
 # global vectorizer
 try:
-    vect = ModelIO.load('tokenizer_reddit')
+    # vect = ModelIO.load('tokenizer_coco_train2014')
+    vect = ModelIO.load('tokenizer_reddit') # gloveglove
     print "Tokenizer loaded from file."
 except:
     vect = prepVect()
@@ -283,6 +286,7 @@ def trainend2end(
     , batch_size=128
     , embedding_dim=300
     , n_captions=5
+    , mode='sample'
     ):
     """Train a full end to end system, w/out the encoder/decoder model.
     Like the google paper, "Show and Tell: Image Caption Generation"
@@ -290,7 +294,7 @@ def trainend2end(
     Like how we did it with MNIST
     """
     # data should not be shuffled, as there is semantics in their placement
-    trX, teX, trY, teY = coco(mode="full", batch_size=batch_size, n_captions=n_captions)
+    trX, teX, trY, teY = coco(mode="dev", batch_size=batch_size, n_captions=n_captions)
     prestream = DataETL.getTokenizedStream(trX, trY, sources=sources,
         batch_size=batch_size, n_captions=n_captions)
 
@@ -305,7 +309,7 @@ def trainend2end(
         , dim=embedding_dim
         , dictionary_size=vect.n_features
         , max_sequence_length=30
-        , lookup_file='glove_lookup_53454.npy'
+        , lookup_file='glove_lookup_53454.npy' # gloveglove
         , biases_init=Constant(0.)
         , weights_init=IsotropicGaussian(0.02)
         )
@@ -344,20 +348,45 @@ def trainend2end(
     main_loop.run()
 
     # Training finished; save the generator function w/ learned params
-    sample = show_and_tell.generate(image_vects)
-    f_gen = ComputationGraph(sample).get_theano_function()
-    try:
-        ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30_embeddingdim.300_glove')
-        print "It saved! Thanks pickle!"
-    except Exception, e:
-        print "Fuck pickle and move on with your life :)"
-        print e
-    ModelEval.predict(f_gen)
+    generated = show_and_tell.generate(image_vects)
+    
+    # Beam Search
+    if mode == "beam":
+        samples, = VariableFilter(
+            applications=[show_and_tell.generator.generate], name="outputs")(
+                ComputationGraph(generated)) # generated[1] is next_outputs
+        beam_search = BeamSearch(samples)
+        try:
+            path = '/home/luke/datasets/coco/predict/'
+            filename = 'end2end_beam_maxseqlen.30_embeddingdim.300'
+            ModelIO.save(beam_search, '%s%s' % (path, filename))
+            print "It saved! Thanks pickle!"
+        except Exception, e:
+            print "Fuck pickle and move on with your life :)"
+            print e
+        ModelEval.beamsearch(beam_search)
+    else:    
+        f_gen = ComputationGraph(generated).get_theano_function()
+        try:
+            ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30_embeddingdim.300_glove')
+            print "It saved! Thanks pickle!"
+        except Exception, e:
+            print "Fuck pickle and move on with your life :)"
+            print e
+        ModelEval.predict(f_gen)
 
-def sampleend2end():
+def sampleend2end(mode='sample'):
     print "Loading Model..."
-    f_gen = ModelIO.load('/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30_embeddingdim.300_glove')
-    ModelEval.predict(f_gen, savepath='/home/luke/datasets/coco/predict/generate_captions.json')
+    if mode == "beam":
+        path = '/home/luke/datasets/coco/predict/'
+        filename = 'end2end_beam_maxseqlen.30_embeddingdim.300'
+        beam_search = ModelIO.load('%s%s' % (path, filename))
+        savepath = '/home/luke/datasets/coco/predict/generate_captions.json'
+        ModelEval.beamsearch(beam_search, savepath=savepath, n_attempts=20)
+    else:
+        f_gen = ModelIO.load('/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30')
+        savepath = '/home/luke/datasets/coco/predict/generate_captions.json'
+        ModelEval.predict(f_gen, savepath=savepath, n_attempts=25)
 
 def traindecoder(
       sources = ("image_vects", "word_vects")
@@ -578,7 +607,7 @@ class ModelEval():
         return relevant_captions
 
     @staticmethod
-    def predict(f_gen, X=None, Y=None, filenames=None, savepath=None):
+    def predict(f_gen, X=None, Y=None, filenames=None, savepath=None, n_attempts=None):
         if X is None or Y is None or filenames is None:
             X, Y, filenames = cocoXYFilenames(dataType='val2014')
         ep = DataETL.getTokenizedStream(
@@ -592,8 +621,11 @@ class ModelEval():
                 im_vects, txt_enc = ep.next()
                 txt = " ".join(vect.inverse_transform(txt_enc))
                 print "\nTrying for: ", txt
-                message=("Number of attempts to generate correct text? ")
-                batch_size = int(input(message))
+                if n_attempts:
+                    batch_size = n_attempts
+                else:
+                    message=("Number of attempts to generate correct text? ")
+                    batch_size = int(input(message)) 
                 states, outputs, costs = f_gen(
                         np.repeat(im_vects, batch_size, 0)
                         )
@@ -602,7 +634,7 @@ class ModelEval():
                 for i in range(len(outputs)):
                     outputs[i] = list(outputs[i])
                     try:
-                        # 0 is my stop character, via foxhound Tokenizer
+                        # 0 is my PAD character, via foxhound Tokenizer
                         true_length = outputs[i].index(0)
                     except ValueError:
                         # full sequence length
@@ -626,6 +658,51 @@ class ModelEval():
                 if savepath:
                     dict2json(generated_captions, savepath, cls=DecimalEncoder)
                 return
+
+    @staticmethod
+    def beamsearch(beam_search, X=None, Y=None, filenames=None, savepath=None, n_attempts=None):
+        if X is None or Y is None or filenames is None:
+            X, Y, filenames = cocoXYFilenames(dataType='val2014')
+        ep = DataETL.getTokenizedStream(
+            X=X, Y=Y, sources=('X', 'Y'), batch_size=1).get_epoch_iterator()
+        if savepath:
+            generated_captions = {}
+
+        for filename in filenames:
+            try:
+                # No good way to make sure the filename is matching
+                im_vects, txt_enc = ep.next()
+                txt = " ".join(vect.inverse_transform(txt_enc))
+                print "\nTrying for: ", txt
+                if n_attempts:
+                    batch_size = n_attempts
+                else:
+                    message=("Beam Size? ")
+                    batch_size = int(input(message)) 
+                input_ = np.repeat(im_vects, batch_size, 0)
+                outputs, costs = beam_search.search(
+                          input_values={chars: input_}
+                        , eol_symbol=0 # encoder["PAD"] = 0 from foxhound tokenizer
+                        , max_length=3 * input_.shape[0] # not sure about this times 3
+                        )
+                messages = []
+                for sample, cost in equizip(outputs, costs):
+                    # vect.inverse_transform needs a shape (seq, 1) array
+                    sample = np.array(sample).reshape(-1, 1)
+                    message = "({0:0.3f}) ".format(cost)
+                    message += " ".join(vect.inverse_transform(sample))
+                    cost = decimal.Decimal(float(cost))
+                    messages.append((cost, message))
+                messages.sort(key=operator.itemgetter(0), reverse=True)
+                for _, message in messages:
+                    print(message)
+                if savepath:
+                    generated_captions[filename] = messages
+            except KeyboardInterrupt:
+                if savepath:
+                    dict2json(generated_captions, savepath, cls=DecimalEncoder)
+                return
+
 
 if __name__ == '__main__':
     def test_samplerankcaptions():
@@ -666,5 +743,5 @@ if __name__ == '__main__':
     # foo()
     # traindecoder()
     # trainencoder()
-    # trainend2end(batch_size=32)
-    sampleend2end()
+    trainend2end(batch_size=64, mode='beam')
+    # sampleend2end()
