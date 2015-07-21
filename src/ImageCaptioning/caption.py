@@ -76,8 +76,8 @@ def prepVect(min_df=2, max_features=50000, n_captions=5):
 
 # global vectorizer
 try:
-    # vect = ModelIO.load('tokenizer_coco_train2014')
-    vect = ModelIO.load('tokenizer_reddit') # gloveglove
+    vect = ModelIO.load('tokenizer_coco_train2014')
+    # vect = ModelIO.load('tokenizer_reddit') # gloveglove
     print "Tokenizer loaded from file."
 except:
     vect = prepVect()
@@ -251,7 +251,7 @@ def trainencoder(
     algorithm = GradientDescent(
           cost=cost
         , parameters=cg.parameters
-        , step_rule=Adam()
+        , step_rule=Adam(learning_rate=0.0002)
         )
     main_loop = MainLoop(
           model=Model(cost)
@@ -294,7 +294,7 @@ def trainend2end(
     Like how we did it with MNIST
     """
     # data should not be shuffled, as there is semantics in their placement
-    trX, teX, trY, teY = coco(mode="dev", batch_size=batch_size, n_captions=n_captions)
+    trX, teX, trY, teY = coco(mode="full", batch_size=batch_size, n_captions=n_captions)
     prestream = DataETL.getTokenizedStream(trX, trY, sources=sources,
         batch_size=batch_size, n_captions=n_captions)
 
@@ -309,7 +309,7 @@ def trainend2end(
         , dim=embedding_dim
         , dictionary_size=vect.n_features
         , max_sequence_length=30
-        , lookup_file='glove_lookup_53454.npy' # gloveglove
+        # , lookup_file='glove_lookup_53454.npy' # gloveglove
         , biases_init=Constant(0.)
         , weights_init=IsotropicGaussian(0.02)
         )
@@ -322,7 +322,7 @@ def trainend2end(
     algorithm = GradientDescent(
           cost=cost
         , parameters=cg.parameters
-        , step_rule=Adam()
+        , step_rule=Adam(learning_rate=0.0002)
         )
     main_loop = MainLoop(
           model=model
@@ -368,25 +368,25 @@ def trainend2end(
     else:    
         f_gen = ComputationGraph(generated).get_theano_function()
         try:
-            ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30_embeddingdim.300_glove')
+            ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30_embeddingdim.300')
             print "It saved! Thanks pickle!"
         except Exception, e:
             print "Fuck pickle and move on with your life :)"
             print e
         ModelEval.predict(f_gen)
 
-def sampleend2end(mode='sample'):
+def sampleend2end(mode='sample', n_attempts=5):
     print "Loading Model..."
     if mode == "beam":
         path = '/home/luke/datasets/coco/predict/'
         filename = 'end2end_beam_maxseqlen.30_embeddingdim.300'
         beam_search = ModelIO.load('%s%s' % (path, filename))
         savepath = '/home/luke/datasets/coco/predict/generate_captions.json'
-        ModelEval.beamsearch(beam_search, savepath=savepath, n_attempts=20)
+        ModelEval.beamsearch(beam_search, savepath=savepath, n_attempts=n_attempts)
     else:
         f_gen = ModelIO.load('/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30')
-        savepath = '/home/luke/datasets/coco/predict/generate_captions.json'
-        ModelEval.predict(f_gen, savepath=savepath, n_attempts=25)
+        savepath = '/home/luke/datasets/coco/predict/generate_captions_mean.json'
+        ModelEval.predict(f_gen, savepath=savepath, n_attempts=n_attempts)
 
 def traindecoder(
       sources = ("image_vects", "word_vects")
@@ -640,21 +640,23 @@ class ModelEval():
                         # full sequence length
                         true_length = len(outputs[i])
                     outputs[i] = outputs[i][:true_length]
-                    costs[i] = costs[i][:true_length].sum()
+                    costs[i] = costs[i][:true_length].mean()
                 messages = []
                 for sample, cost in equizip(outputs, costs):
                     # vect.inverse_transform needs a shape (seq, 1) array
                     sample = np.array(sample).reshape(-1, 1)
                     message = "({0:0.3f}) ".format(cost)
                     message += " ".join(vect.inverse_transform(sample))
-                    cost = decimal.Decimal(float(cost))
                     messages.append((cost, message))
                 messages.sort(key=operator.itemgetter(0), reverse=True)
+                
+                # convert to decimal to be picklable
+                messages = [(decimal.Decimal(float(cost)), message) for cost, message in messages] 
                 for _, message in messages:
                     print(message)
                 if savepath:
                     generated_captions[filename] = messages
-            except KeyboardInterrupt:
+            except:
                 if savepath:
                     dict2json(generated_captions, savepath, cls=DecimalEncoder)
                 return
@@ -743,5 +745,5 @@ if __name__ == '__main__':
     # foo()
     # traindecoder()
     # trainencoder()
-    trainend2end(batch_size=64, mode='beam')
-    # sampleend2end()
+    # trainend2end(batch_size=64, mode='sample')
+    sampleend2end(n_attempts=1000)
