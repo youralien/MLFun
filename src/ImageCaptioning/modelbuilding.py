@@ -16,9 +16,10 @@ from blocks.monitoring import aggregation
 class ShowAndTell(Initializable):
 
     def __init__(self, image_dim, dim, dictionary_size, max_sequence_length,
-                 lookup_file=None, **kwargs):
+                 lookup_file=None, recurrent_unit='gru', **kwargs):
         super(ShowAndTell, self).__init__(**kwargs)
         self.max_sequence_length = max_sequence_length
+        self.recurrent_unit = recurrent_unit
 
         # make image dimension of the embedding, so we can initialize
         # the hidden state with it
@@ -28,9 +29,14 @@ class ShowAndTell(Initializable):
             , name='image_embedding'
             )
 
-        transition = GatedRecurrentWithInitialState(
-            name='transition', dim=dim
-            )
+        if recurrent_unit == 'gru':
+            transition = GatedRecurrentWithInitialState(
+                name='transition', dim=dim
+                )
+        else:
+            transition = LSTMWithInitialState(
+                name='transition', dim=dim
+                )
 
         if lookup_file:
             lookup = PretrainedLookupTable(lookup_file)
@@ -155,6 +161,28 @@ class GatedRecurrentWithInitialState(GatedRecurrent):
         # cnn_context should be shape (batch_size, dim)
         cnn_context = kwargs['cnn_context']
         return [cnn_context]
+
+class LSTMWithInitialState(LSTM):
+    
+    @lazy(allocation=['dim'])
+    def __init__(self, dim, activation=None, **kwargs):
+        super(LSTMWithInitialState, self).__init__(
+            dim, activation, **kwargs)
+
+    @recurrent(sequences=['mask', 'inputs'],
+               states=['states', 'cells'],
+               outputs=['states', 'cells'],
+               contexts=['cnn_context'])
+    def apply(self, inputs, states, cells, mask=None, cnn_context=None):
+        return super(LSTMWithInitialState, self).apply(
+            inputs, states, cells, mask, iterate=False)
+
+    @application(outputs=apply.states)
+    def initial_states(self, batch_size, *args, **kwargs):
+        # cnn_context should be shape (batch_size, dim)
+        cnn_context = kwargs['cnn_context']
+        return [cnn_context,
+                tensor.repeat(self.initial_cells[None, :], batch_size, 0)]
 
 class PretrainedLookupTable(LookupTable):
     def __init__(self, npy_file, **kwargs):

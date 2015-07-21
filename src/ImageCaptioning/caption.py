@@ -36,6 +36,7 @@ from modelbuilding import Encoder, l2norm
 from dataset import (coco, cocoXYFilenames, FoxyDataStream, GloveTransformer,
     ShuffleBatch, FoxyIterationScheme, loadFeaturesTargets, fillOutFilenames)
 from utils import dict2json, vStackMatrices, DecimalEncoder
+from cuboid.extensions import UserFunc
 
 # # # # # # #
 #  Model IO #
@@ -310,6 +311,7 @@ def trainend2end(
         , dictionary_size=vect.n_features
         , max_sequence_length=30
         # , lookup_file='glove_lookup_53454.npy' # gloveglove
+        , recurrent_unit='lstm'
         , biases_init=Constant(0.)
         , weights_init=IsotropicGaussian(0.02)
         )
@@ -317,6 +319,15 @@ def trainend2end(
     cost = show_and_tell.cost(image_vects, word_tokens)
     cost.name = "seq_log_likelihood"
     cg = ComputationGraph(cost)
+
+    name = "NIC_%s_dim.%s" % (show_and_tell.recurrent_unit, embedding_dim)
+    savename = '/home/luke/datasets/coco/predict/%s' % name
+
+    def save_f_gen(self):
+        generated = show_and_tell.generate(image_vects)
+        f_gen = ComputationGraph(generated).get_theano_function()
+        ModelIO.save(f_gen, savename)
+        print "Generation function saved while training"
 
     model = Model(cost)
     algorithm = GradientDescent(
@@ -341,6 +352,7 @@ def trainend2end(
                       batch_size=batch_size, n_captions=n_captions)
                   , prefix='test')
             , Printing()
+            , UserFunc(save_f_gen, after_epoch=True)
             , FinishIfNoImprovementAfter(notification_name="test_seq_log_likelihood",
                 epochs=1)
             ]
@@ -368,7 +380,8 @@ def trainend2end(
     else:    
         f_gen = ComputationGraph(generated).get_theano_function()
         try:
-            ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30_embeddingdim.300')
+            name = "NIC_%s_dim.%s" % (show_and_tell.recurrent_unit, embedding_dim)
+            ModelIO.save(f_gen, '/home/luke/datasets/coco/predict/%s' % name)
             print "It saved! Thanks pickle!"
         except Exception, e:
             print "Fuck pickle and move on with your life :)"
@@ -384,8 +397,10 @@ def sampleend2end(mode='sample', n_attempts=5):
         savepath = '/home/luke/datasets/coco/predict/generate_captions.json'
         ModelEval.beamsearch(beam_search, savepath=savepath, n_attempts=n_attempts)
     else:
-        f_gen = ModelIO.load('/home/luke/datasets/coco/predict/end2end_f_gen_maxseqlen.30')
-        savepath = '/home/luke/datasets/coco/predict/generate_captions_mean.json'
+        path = "/home/luke/datasets/coco/predict/"
+        filename = 'NIC_lstm_dim.512'
+        f_gen = ModelIO.load(path + filename)
+        savepath = '/home/luke/datasets/coco/predict/generate_captions_mean_lstm.json'
         ModelEval.predict(f_gen, savepath=savepath, n_attempts=n_attempts)
 
 def traindecoder(
@@ -626,9 +641,16 @@ class ModelEval():
                 else:
                     message=("Number of attempts to generate correct text? ")
                     batch_size = int(input(message)) 
-                states, outputs, costs = f_gen(
+
+                # make this call compatible with GRUs and LSTMs
+                # GRU - generated is tuple of 3 elements (states, outputs, costs) 
+                # LSTM - generated is tuple of 4 elements (states, cells, outputs, costs) 
+                generated = f_gen(
                         np.repeat(im_vects, batch_size, 0)
                         )
+                outputs = generated[-2]
+                costs = generated[-1]
+
                 outputs = list(outputs.T)
                 costs = list(costs.T)
                 for i in range(len(outputs)):
@@ -683,7 +705,7 @@ class ModelEval():
                     batch_size = int(input(message)) 
                 input_ = np.repeat(im_vects, batch_size, 0)
                 outputs, costs = beam_search.search(
-                          input_values={chars: input_}
+                          input_values={"cnn_context": input_}
                         , eol_symbol=0 # encoder["PAD"] = 0 from foxhound tokenizer
                         , max_length=3 * input_.shape[0] # not sure about this times 3
                         )
@@ -745,5 +767,5 @@ if __name__ == '__main__':
     # foo()
     # traindecoder()
     # trainencoder()
-    # trainend2end(batch_size=64, mode='sample')
-    sampleend2end(n_attempts=1000)
+    # trainend2end(batch_size=64, embedding_dim=512, mode='sample')
+    sampleend2end(n_attempts=100)
