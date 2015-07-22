@@ -1,6 +1,7 @@
 import os
 import csv
 import ipdb
+import operator
 
 import numpy as np
 import pandas as pd
@@ -23,7 +24,7 @@ def coco(mode="dev", batch_size=64, n_captions=1):
     if mode == "dev":
         train_fns = shuffle(train_fns)[:batch_size*50]
     trX, trY = loadFeaturesTargets(train_fns, dataType, n_captions)
-    
+
     # val_fns
     dataType='val2014'
     test_fns = os.listdir("%s/features/%s"%(dataDir, dataType))
@@ -34,6 +35,42 @@ def coco(mode="dev", batch_size=64, n_captions=1):
     teX, teY = loadFeaturesTargets(test_fns, dataType, n_captions)
 
     return trX, teX, trY, teY
+
+def sbuXYFilenames(n_examples):
+    """
+    n_examples to try to load.  It might not load all of them
+    """
+    sbu_path = "/home/luke/datasets/sbu/"
+    sbu_feature_path = os.path.join(sbu_path, "features")
+    sbu_caption_path = os.path.join(sbu_path, "SBU_captioned_photo_dataset_captions.txt")
+    sbu_urls_path = os.path.join(sbu_path, "SBU_captioned_photo_dataset_urls.txt")
+    fns = os.listdir(sbu_feature_path)[:n_examples]
+    
+    print "Reading SBU captions"
+    f = open(sbu_caption_path, 'rb')
+    captions = f.read().splitlines()
+    f.close()
+
+    X, Y = [], []
+    successes = []
+
+    print "Loading in SBU Features"
+    for i in range(len(fns)):
+        fn = fns[i]
+        try:
+            # fn should be SBU_%d
+            index = int(fn[4:].split(".")[0])
+            X.append(np.load(os.path.join(sbu_feature_path, fn)))
+            Y.append([captions[index]])
+            successes.append(i)
+        except:
+            continue
+
+    # get only the successful fns
+    fns = operator.itemgetter(*successes)(fns)
+    print "SBU Done!"
+
+    return X, Y, fns
 
 def cocoXYFilenames(n_captions=5, dataType='val2014'):
     """Helps when you are evaluating and want the filenames
@@ -77,13 +114,13 @@ def loadFeaturesTargets(fns, dataType, n_captions=1):
         1st list length = len(fns)
         vectors are shape (4096, )
 
-    Y: list of list of captions. 
+    Y: list of list of captions.
         1st list length = len(fns)
-        sublist length = n_captions  
+        sublist length = n_captions
     """
     annFile = '%s/annotations/captions_%s.json'%(dataDir,dataType)
     caps=COCO(annFile)
-    
+
     X = []
     Y = []
 
@@ -98,7 +135,7 @@ def loadFeaturesTargets(fns, dataType, n_captions=1):
         # sample n_captions per image
         anns = shuffle(anns)
         captions = [getCaption(anns[i]) for i in range(n_captions)]
-        
+
         X.append(x)
         Y.append(captions)
 
@@ -126,7 +163,7 @@ def getImageId(fn):
 
 def getCaption(ann):
     """gets Caption from the COCO annotation object
-    
+
     Parameters
     ----------
     ann: list of annotation objects
@@ -208,7 +245,7 @@ class GloveTransformer(Transformer):
         keys = raw[0].values
         self.vectors = raw[range(1, len(raw.columns))].values.astype(theano.config.floatX)
         self.vector_dim = self.vectors.shape[1]
-        
+
         # lookup will have (key, val) -> (word-string, row index in self.vectors)
         row_indexes = range(self.vectors.shape[0])
         self.lookup = dict(zip(keys, row_indexes))
@@ -243,7 +280,7 @@ class GloveTransformer(Transformer):
         def process_tokens(tokens):
             output = np.zeros((len(tokens), self.vector_dim), dtype=theano.config.floatX)
             for i,t in enumerate(tokens):
-                word = self.vectorizer.decoder[t] 
+                word = self.vectorizer.decoder[t]
                 if word in self.lookup:
                     output[i, :] = self.vectors[self.lookup[word]]
                 # else t is UNK or PAD so we leave the output alone (zero padded)
@@ -276,8 +313,8 @@ if __name__ == '__main__':
         dataType='val2014'
         test_fns = os.listdir("%s/features/%s"%(dataDir, dataType))
         test_fns = test_fns[:128]
-        
-        new_fns = fillOutFilenames(test_fns, n_captions) 
+
+        new_fns = fillOutFilenames(test_fns, n_captions)
         print new_fns
 
     test_fillOutFilenames()
