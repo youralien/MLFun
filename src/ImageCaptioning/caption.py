@@ -1,9 +1,11 @@
 # common python
 import decimal
 import operator
+from collections import OrderedDict
 
 # scientific python
 import numpy as np
+import pandas as pd
 import theano
 from theano import tensor as T
 from picklable_itertools.extras import equizip
@@ -34,7 +36,8 @@ from foxhound.rng import py_rng
 # local imports
 from modelbuilding import Encoder, l2norm
 from dataset import (coco, cocoXYFilenames, FoxyDataStream, GloveTransformer,
-    ShuffleBatch, FoxyIterationScheme, loadFeaturesTargets, fillOutFilenames)
+    ShuffleBatch, FoxyIterationScheme, loadFeaturesTargets, fillOutFilenames,
+    sbuXYFilenames)
 from utils import dict2json, vStackMatrices, DecimalEncoder
 from cuboid.extensions import UserFunc
 
@@ -68,29 +71,35 @@ def sampleCaptions(ymb, K=1):
         sampled_captions.extend(py_rng.sample(captions_of_an_img, K))
     return sampled_captions
 
-def prepVect(min_df=2, max_features=50000, n_captions=5):
+def prepVect(min_df=2, max_features=50000, n_captions=5, n_sbu=None):
     print "prepping the Word Tokenizer..."
     _0, _1, trY, _3 = coco(mode='full', n_captions=n_captions)
+    if n_sbu:
+        _4, sbuY, _5 = sbuXYFilenames(n_sbu)
+        trY.extend(sbuY)
     vect = Tokenizer(min_df=min_df, max_features=max_features)
     vect.fit(sampleCaptions(trY, n_captions))
     return vect
 
 # global vectorizer
 try:
-    vect = ModelIO.load('tokenizer_coco_train2014')
+    vect_name = 'tokenizer_coco_train2014'
+    # vect_name = 'tokenizer_reddit' # gloveglove
+    # vect_name = 'tokenizer_coco_train2014+sbu100000'
+    vect = ModelIO.load(vect_name)
     # vect = ModelIO.load('tokenizer_reddit') # gloveglove
     print "Tokenizer loaded from file."
 except:
-    vect = prepVect()
-    ModelIO.save(vect, 'tokenizer_coco_train2014')
-    print "Saved this tokenizer for future use."
+    vect = prepVect(n_sbu=100000, n_captions=1)
+    ModelIO.save(vect, vect_name)
+    print "Saved %s for future use." % vect_name
 
 
 class DataETL():
 
     @staticmethod
     def getFinalStream(X, Y, sources, sources_k, batch_size=128, embedding_dim=300,
-        n_captions=1):
+        n_captions=1, shuffle=False):
         """Despite horrible variable names, this method
         gives back the final stream for both train or test data
 
@@ -112,10 +121,10 @@ class DataETL():
         # Foxhound Iterators
         # RCL: Write own iterator to sample positive examples/captions, since there are 5 for each image.
         train_iterator = iterators.Linear(
-            trXt=trXt, trYt=Yt, size=batch_size, shuffle=False
+            trXt=trXt, trYt=Yt, size=batch_size, shuffle=shuffle
             )
         train_iterator_k = iterators.Linear(
-            trXt=trXt, trYt=Yt, size=batch_size, shuffle=False
+            trXt=trXt, trYt=Yt, size=batch_size, shuffle=shuffle
             )
 
         # FoxyDataStreams
@@ -188,10 +197,16 @@ def trainencoder(
     , batch_size=128
     , embedding_dim=300
     , n_captions=5
+    , n_sbu=None
     ):
     # data should not be shuffled, as there is semantics in their placement
     trX, teX, trY, teY = coco(mode="dev", batch_size=batch_size, n_captions=n_captions)
 
+    # add SBU
+    if n_sbu:
+        sbuX, sbuY, _ = sbuXYFilenames(n_sbu)
+        trX.extend(sbuX)
+        trY.extend(sbuY)
     # # # # # # # # # # #
     # Modeling Building #
     # # # # # # # # # # #
@@ -243,6 +258,27 @@ def trainencoder(
     # function to produce embedding
     f_emb = theano.function([image_vects, word_vects], [lim, ls])
 
+    if n_sbu:
+        sbuname = "sbu.%d" % n_sbu
+    else:
+        sbuname = ''
+    name = "%s+coco_encoder_lstm_dim.%s" % (sbuname, embedding_dim)
+    savename = '/home/luke/datasets/coco/predict/%s' % name
+
+    def save_function(self):
+        ModelIO.save(f_emb, savename)
+        print "Similarity Embedding function saved while training"
+
+    def rank_function(self):
+        # Get 1000 images / captions to test rank
+        stream = DataETL.getFinalStream(teX, teY, sources=sources,
+                            sources_k=sources_k, batch_size=1000,
+                            n_captions=n_captions, shuffle=True)
+        
+        images, captions, _0, _1 = stream.get_epoch_iterator().next()
+        image_embs, caption_embs = f_emb(images, captions)
+        ModelEval.ImageSentenceRanking(image_embs, caption_embs)
+
     cg = ComputationGraph(cost)
 
     # # # # # # # # # # #
@@ -272,15 +308,17 @@ def trainencoder(
                       sources_k=sources_k, batch_size=batch_size,
                       n_captions=n_captions)
                 , prefix='test')
-            # , ProgressBar()
+            , UserFunc(save_function, after_epoch=True)
+            , UserFunc(rank_function, after_epoch=True)
             , Printing()
-            # , FinishAfter(after_n_epochs=15)
+            , FinishIfNoImprovementAfter(notification_name="test_pairwise_ranking_loss",
+                iterations=500)
             ]
         )
     main_loop.run()
 
     # ModelIO.save(f_emb, '/home/luke/datasets/coco/predict/fullencoder_maxfeatures.50000_epochsampler')
-    ModelIO.save(f_emb, '/home/luke/datasets/coco/predict/encoder')
+    ModelIO.save(f_emb, savename)
 
 def trainend2end(
       sources = ("image_vects", "word_tokens")
@@ -288,6 +326,8 @@ def trainend2end(
     , embedding_dim=300
     , n_captions=5
     , mode='sample'
+    , n_sbu=None
+    , recurrent_unit='lstm'
     ):
     """Train a full end to end system, w/out the encoder/decoder model.
     Like the google paper, "Show and Tell: Image Caption Generation"
@@ -296,8 +336,17 @@ def trainend2end(
     """
     # data should not be shuffled, as there is semantics in their placement
     trX, teX, trY, teY = coco(mode="full", batch_size=batch_size, n_captions=n_captions)
-    prestream = DataETL.getTokenizedStream(trX, trY, sources=sources,
-        batch_size=batch_size, n_captions=n_captions)
+
+    # add SBU
+    if n_sbu:
+        sbuX, sbuY, _ = sbuXYFilenames(n_sbu)
+        trX.extend(sbuX)
+        trY.extend(sbuY)
+
+
+    # # needed to do the vectorize fitting
+    # prestream = DataETL.getTokenizedStream(trX, trY, sources=sources,
+    #     batch_size=batch_size, n_captions=n_captions)
 
     image_vects = T.matrix(sources[0])
     word_tokens = T.lmatrix(sources[1])
@@ -311,7 +360,8 @@ def trainend2end(
         , dictionary_size=vect.n_features
         , max_sequence_length=30
         # , lookup_file='glove_lookup_53454.npy' # gloveglove
-        , recurrent_unit='lstm'
+        , recurrent_unit=recurrent_unit
+        , norm=True
         , biases_init=Constant(0.)
         , weights_init=IsotropicGaussian(0.02)
         )
@@ -320,7 +370,7 @@ def trainend2end(
     cost.name = "seq_log_likelihood"
     cg = ComputationGraph(cost)
 
-    name = "NIC_%s_dim.%s" % (show_and_tell.recurrent_unit, embedding_dim)
+    name = "sbu+coco_NIC_%s_dim.%s" % (show_and_tell.recurrent_unit, embedding_dim)
     savename = '/home/luke/datasets/coco/predict/%s' % name
 
     def save_f_gen(self):
@@ -354,14 +404,14 @@ def trainend2end(
             , Printing()
             , UserFunc(save_f_gen, after_epoch=True)
             , FinishIfNoImprovementAfter(notification_name="test_seq_log_likelihood",
-                epochs=1)
+                iterations=1000)
             ]
         )
     main_loop.run()
 
     # Training finished; save the generator function w/ learned params
     generated = show_and_tell.generate(image_vects)
-    
+
     # Beam Search
     if mode == "beam":
         samples, = VariableFilter(
@@ -377,7 +427,7 @@ def trainend2end(
             print "Fuck pickle and move on with your life :)"
             print e
         ModelEval.beamsearch(beam_search)
-    else:    
+    else:
         f_gen = ComputationGraph(generated).get_theano_function()
         try:
             name = "NIC_%s_dim.%s" % (show_and_tell.recurrent_unit, embedding_dim)
@@ -398,9 +448,9 @@ def sampleend2end(mode='sample', n_attempts=5):
         ModelEval.beamsearch(beam_search, savepath=savepath, n_attempts=n_attempts)
     else:
         path = "/home/luke/datasets/coco/predict/"
-        filename = 'NIC_lstm_dim.512'
+        filename = 'sbu+coco_NIC_lstm_dim.300'
         f_gen = ModelIO.load(path + filename)
-        savepath = '/home/luke/datasets/coco/predict/generate_captions_mean_lstm.json'
+        savepath = '/home/luke/datasets/coco/predict/generate_captions.json'
         ModelEval.predict(f_gen, savepath=savepath, n_attempts=n_attempts)
 
 def traindecoder(
@@ -527,8 +577,9 @@ class ModelEval():
     @staticmethod
     def i2t(images, captions, z=1, npts=None):
         """
-        Images: (z*N, K) matrix of images
-        Captions: (z*N, K) matrix of captions
+        Taken from https://github.com/ryankiros/skip-thoughts/blob/master/eval_rank.py
+        Images: (z*N, K) matrix of image embeddings
+        Captions: (z*N, K) matrix of caption embeddings
         """
         if npts == None:
             npts = images.shape[0] / z
@@ -564,6 +615,66 @@ class ModelEval():
         r10 = 100.0 * len(np.where(ranks < 10)[0]) / len(ranks)
         medr = np.floor(np.median(ranks)) + 1
         return (r1, r5, r10, medr)
+
+    @staticmethod
+    def t2i(images, captions, z=1, npts=None):
+        """
+        Taken from https://github.com/ryankiros/skip-thoughts/blob/master/eval_rank.py
+        Images: (z*N, K) matrix of image embeddings
+        Captions: (z*N, K) matrix of captions embeddings
+        """
+        if npts == None:
+            npts = images.shape[0] / z
+        ims = np.array([images[i] for i in range(0, len(images), z)])
+
+
+        # Project images
+        for i in range(len(ims)):
+            ims[i] /= np.linalg.norm(ims[i])
+
+        # Project captions
+        for i in range(len(captions)):
+            captions[i] /= np.linalg.norm(captions[i])
+
+        ranks = np.zeros(z * npts)
+        for index in range(npts):
+
+            # Get query captions
+            queries = captions[z*index : z*index + z]
+
+            # Compute scores
+            d = np.dot(queries, ims.T)
+            inds = np.zeros(d.shape)
+            for i in range(len(inds)):
+                inds[i] = np.argsort(d[i])[::-1]
+                ranks[z * index + i] = np.where(inds[i] == index)[0][0]
+
+        # Compute metrics
+        r1 = 100.0 * len(np.where(ranks < 1)[0]) / len(ranks)
+        r5 = 100.0 * len(np.where(ranks < 5)[0]) / len(ranks)
+        r10 = 100.0 * len(np.where(ranks < 10)[0]) / len(ranks)
+        medr = np.floor(np.median(ranks)) + 1
+        return (r1, r5, r10, medr)
+
+    @staticmethod
+    def ImageSentenceRanking(images, captions, z=1):
+        """
+        Print nicely formatted tables each iteration
+        N = 1000 is commonly used.
+        images: (N, K)
+        captions: (N, K)
+        z: number of images per caption (see i2t, t2i)
+        """
+        rank_labels = ('R @ 1', 'R @ 5', 'R @ 10', 'Med R')
+        image_annotation = ModelEval.i2t(images, captions, z)
+        image_search = ModelEval.t2i(images, captions, z)
+
+        print pd.DataFrame(OrderedDict(zip(rank_labels, image_annotation)), 
+            index=pd.Index(["Image Annotation"])).to_string()
+        print pd.DataFrame(OrderedDict(zip(rank_labels, image_search)), 
+            index=pd.Index(["Image Search    "])).to_string()
+
+        return image_annotation, image_search
 
     @staticmethod
     def getRelevantCaptions(im_emb, s_emb, image_fns, caption_strings, top_n, z=1, npts=None):
@@ -671,7 +782,7 @@ class ModelEval():
                     message += " ".join(vect.inverse_transform(sample))
                     messages.append((cost, message))
                 messages.sort(key=operator.itemgetter(0), reverse=True)
-                
+
                 # convert to decimal to be picklable
                 messages = [(decimal.Decimal(float(cost)), message) for cost, message in messages] 
                 for _, message in messages:
@@ -707,7 +818,7 @@ class ModelEval():
                 outputs, costs = beam_search.search(
                           input_values={"cnn_context": input_}
                         , eol_symbol=0 # encoder["PAD"] = 0 from foxhound tokenizer
-                        , max_length=3 * input_.shape[0] # not sure about this times 3
+                        , max_length=30 # hardcoded from how we trained it
                         )
                 messages = []
                 for sample, cost in equizip(outputs, costs):
@@ -715,9 +826,11 @@ class ModelEval():
                     sample = np.array(sample).reshape(-1, 1)
                     message = "({0:0.3f}) ".format(cost)
                     message += " ".join(vect.inverse_transform(sample))
-                    cost = decimal.Decimal(float(cost))
                     messages.append((cost, message))
                 messages.sort(key=operator.itemgetter(0), reverse=True)
+
+                # convert to decimal to be picklable
+                messages = [(decimal.Decimal(float(cost)), message) for cost, message in messages] 
                 for _, message in messages:
                     print(message)
                 if savepath:
@@ -766,6 +879,6 @@ if __name__ == '__main__':
 
     # foo()
     # traindecoder()
-    # trainencoder()
-    # trainend2end(batch_size=64, embedding_dim=512, mode='sample')
-    sampleend2end(n_attempts=100)
+    trainencoder(n_sbu=None)
+    # trainend2end(batch_size=100, embedding_dim=300, mode='sample', n_sbu=100000, recurrent_unit='lstm')
+    # sampleend2end(n_attempts=20, mode='sample')
