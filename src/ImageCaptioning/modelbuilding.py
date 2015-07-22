@@ -6,20 +6,27 @@ import numpy as np
 from blocks.initialization import IsotropicGaussian, Constant
 from blocks.bricks.base import application, lazy
 from blocks.bricks.recurrent import LSTM, GatedRecurrent, recurrent
-from blocks.utils import shared_floatx
+from blocks.utils import shared_floatx, check_theano_variable
 from blocks.bricks import Initializable, Linear
 from blocks.bricks.lookup import LookupTable
 from blocks.bricks.sequence_generators import (
     SequenceGenerator, Readout, SoftmaxEmitter, LookupFeedback)
 from blocks.monitoring import aggregation
 
+# l2 norm, row-wise
+def l2norm(X):
+    norm = tensor.sqrt(tensor.pow(X, 2).sum(1))
+    X /= norm[:, None]
+    return X
+
 class ShowAndTell(Initializable):
 
     def __init__(self, image_dim, dim, dictionary_size, max_sequence_length,
-                 lookup_file=None, recurrent_unit='gru', **kwargs):
+                 lookup_file=None, recurrent_unit='gru', norm=False, **kwargs):
         super(ShowAndTell, self).__init__(**kwargs)
         self.max_sequence_length = max_sequence_length
         self.recurrent_unit = recurrent_unit
+        self.norm = norm
 
         # make image dimension of the embedding, so we can initialize
         # the hidden state with it
@@ -47,7 +54,11 @@ class ShowAndTell(Initializable):
                   match the vectorizer loaded, which it was trained with.
                   """
         else:
-            feedback = LookupFeedback(num_outputs=dictionary_size, feedback_dim=dim)
+            if self.norm:
+                feedback = L2NormedLookupFeedback(num_outputs=dictionary_size,
+                    feedback_dim=dim)
+            else:
+                feedback = LookupFeedback(num_outputs=dictionary_size, feedback_dim=dim)
 
         readout = Readout(
               readout_dim=dictionary_size
@@ -77,6 +88,9 @@ class ShowAndTell(Initializable):
         # shape (batch, features)
         image_embedding = self.image_embedding.apply(image_vects)
 
+        if self.norm:
+            image_embedding = l2norm(image_embedding)
+
         cost = aggregation.mean(
               self.generator.cost_matrix(
                 chars, cnn_context=image_embedding).sum()
@@ -88,6 +102,10 @@ class ShowAndTell(Initializable):
     def generate(self, image_vects):
         # shape (batch, features)
         image_embedding = self.image_embedding.apply(image_vects)
+        
+        if self.norm:
+            image_embedding = l2norm(image_embedding)
+
         return self.generator.generate(
                   n_steps=self.max_sequence_length
                 , batch_size=image_embedding.shape[0]
@@ -221,11 +239,44 @@ class PretrainedLookupFeedback(LookupFeedback):
     def get_dim(self, name):
         return super(PretrainedLookupFeedback, self).get_dim(name)
 
-# l2 norm, row-wise
-def l2norm(X):
-    norm = tensor.sqrt(tensor.pow(X, 2).sum(1))
-    X /= norm[:, None]
-    return X
+class L2NormedLookupTable(LookupTable):
+    
+    def __init__(self, length, dim, **kwargs):
+        super(L2NormedLookupTable, self).__init__(length, dim, **kwargs)
+
+    @application
+    def apply(self, indices):
+        """Perform lookup.
+
+        Parameters
+        ----------
+        indices : :class:`~tensor.TensorVariable`
+            The indices of interest. The dtype must be integer.
+
+        Returns
+        -------
+        output : :class:`~tensor.TensorVariable`
+            Representations for the indices of the query. Has :math:`k+1`
+            dimensions, where :math:`k` is the number of dimensions of the
+            `indices` parameter. The last dimension stands for the
+            representation element.
+
+        """
+        check_theano_variable(indices, None, "int")
+        output_shape = [indices.shape[i]
+                        for i in range(indices.ndim)] + [self.dim]
+        return l2norm(self.W[indices.flatten()]).reshape(output_shape)
+
+
+class L2NormedLookupFeedback(LookupFeedback):
+    def __init__(self, num_outputs=None, feedback_dim=None, **kwargs):
+        super(L2NormedLookupFeedback, self).__init__(**kwargs)
+        self.num_outputs = num_outputs
+        self.feedback_dim = feedback_dim
+
+        self.lookup = L2NormedLookupTable(num_outputs, feedback_dim,
+                                  weights_init=self.weights_init)
+        self.children = [self.lookup]
 
 if __name__ == '__main__':
     import theano
