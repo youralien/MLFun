@@ -9,6 +9,7 @@ import pandas as pd
 import theano
 from theano import tensor as T
 from picklable_itertools.extras import equizip
+from sklearn.preprocessing import MultiLabelBinarizer
 
 # blocks model building
 from blocks.initialization import Uniform, IsotropicGaussian, Constant
@@ -71,35 +72,53 @@ def sampleCaptions(ymb, K=1):
         sampled_captions.extend(py_rng.sample(captions_of_an_img, K))
     return sampled_captions
 
-def prepVect(min_df=2, max_features=50000, n_captions=5, n_sbu=None):
+def prepVect(min_df=2, max_features=50000, n_captions=5, n_sbu=None,
+             multilabel=False):
     print "prepping the Word Tokenizer..."
     _0, _1, trY, _3 = coco(mode='full', n_captions=n_captions)
     if n_sbu:
         _4, sbuY, _5 = sbuXYFilenames(n_sbu)
         trY.extend(sbuY)
     vect = Tokenizer(min_df=min_df, max_features=max_features)
-    vect.fit(sampleCaptions(trY, n_captions))
+    captions = sampleCaptions(trY, n_captions) 
+    vect.fit(captions)
+    if multilabel:
+        mlb = MultiLabelBinarizer()
+        mlb.fit(vect.transform(captions))
+        return vect, mlb
+    # if not multilabel:
     return vect
 
+dataset_name = 'coco_sbu'
+
 # global vectorizer
+vect_name = 'tokenizer_%s' % dataset_name
+mlb_name = 'mlb_%s' % dataset_name
+# vect_name = 'tokenizer_reddit' # gloveglove
+# vect_name = 'tokenizer_coco_train2014+sbu100000'
 try:
-    vect_name = 'tokenizer_coco_train2014'
-    # vect_name = 'tokenizer_reddit' # gloveglove
-    # vect_name = 'tokenizer_coco_train2014+sbu100000'
+    if mlb_name:
+        mlb = ModelIO.load(mlb_name)
+        print "MLB loaded from file"
     vect = ModelIO.load(vect_name)
     # vect = ModelIO.load('tokenizer_reddit') # gloveglove
     print "Tokenizer loaded from file."
 except:
-    vect = prepVect(n_sbu=100000, n_captions=1)
-    ModelIO.save(vect, vect_name)
-    print "Saved %s for future use." % vect_name
-
+    if mlb_name:
+        vect, mlb = prepVect(n_sbu=100000, n_captions=1, multilabel=True)
+        ModelIO.save(vect, vect_name)
+        ModelIO.save(mlb, mlb_name)
+        print "Saved %s, %s for future use." % (vect_name, mlb_name)
+    else:
+        vect = prepVect(n_sbu=100000, n_captions=1)
+        ModelIO.save(vect, vect_name)
+        print "Saved %s for future use." % vect_name
 
 class DataETL():
 
     @staticmethod
     def getFinalStream(X, Y, sources, sources_k, batch_size=128, embedding_dim=300,
-        n_captions=1, shuffle=False):
+        shuffle=False):
         """Despite horrible variable names, this method
         gives back the final stream for both train or test data
 
@@ -160,7 +179,7 @@ class DataETL():
 
     @staticmethod
     def getTokenizedStream(X, Y, sources,
-            batch_size=128, embedding_dim=300, n_captions=1):
+            batch_size=128, embedding_dim=300):
         """getTokenizedStream returns data with images as cnn features
         and captions as tokenized words. NOT glove vectors.
 
@@ -191,6 +210,35 @@ class DataETL():
         train_stream.iteration_scheme = FoxyIterationScheme(len(trX), batch_size)
         return train_stream
 
+    @staticmethod
+    def getMLBStream(X, Y, sources, batch_size=128, embedding_dim=300,
+            shuffle=False):
+        """Returns sources in the format
+        (sources[0], sources[1]--MultiLabelBinarized)
+        """
+        trX, trY = (X, Y)
+
+        # Transforms
+        trXt=lambda x: floatX(x)
+        Yt=lambda y: intX(mlb.transform(vect.transform(sampleCaptions(y))))
+
+        # Foxhound Iterators
+        train_iterator = iterators.Linear(
+            trXt=trXt, trYt=Yt, size=batch_size, shuffle=shuffle
+            )
+
+        # FoxyDataStreams
+        train_stream = FoxyDataStream(
+              (trX, trY)
+            , sources
+            , train_iterator
+            , FoxyIterationScheme(len(trX), batch_size)
+            )
+
+        train_stream.iteration_scheme = FoxyIterationScheme(len(trX), batch_size)
+
+        return train_stream
+
 def trainencoder(
       sources = ("image_vects", "word_vects")
     , sources_k = ("image_vects_k", "word_vects_k")
@@ -200,7 +248,7 @@ def trainencoder(
     , n_sbu=None
     ):
     # data should not be shuffled, as there is semantics in their placement
-    trX, teX, trY, teY = coco(mode="dev", batch_size=batch_size, n_captions=n_captions)
+    trX, teX, trY, teY = coco(mode='full', batch_size=batch_size, n_captions=n_captions)
 
     # add SBU
     if n_sbu:
@@ -273,7 +321,7 @@ def trainencoder(
         # Get 1000 images / captions to test rank
         stream = DataETL.getFinalStream(teX, teY, sources=sources,
                             sources_k=sources_k, batch_size=1000,
-                            n_captions=n_captions, shuffle=True)
+                            shuffle=True)
         
         images, captions, _0, _1 = stream.get_epoch_iterator().next()
         image_embs, caption_embs = f_emb(images, captions)
@@ -293,20 +341,18 @@ def trainencoder(
     main_loop = MainLoop(
           model=Model(cost)
         , data_stream=DataETL.getFinalStream(trX, trY, sources=sources,
-              sources_k=sources_k, batch_size=batch_size, n_captions=n_captions)
+              sources_k=sources_k, batch_size=batch_size)
         , algorithm=algorithm
         , extensions=[
               DataStreamMonitoring(
                   [cost]
                 , DataETL.getFinalStream(trX, trY, sources=sources,
-                      sources_k=sources_k, batch_size=batch_size,
-                      n_captions=n_captions)
+                      sources_k=sources_k, batch_size=batch_size)
                 , prefix='train')
             , DataStreamMonitoring(
                   [cost]
                 , DataETL.getFinalStream(teX, teY, sources=sources,
-                      sources_k=sources_k, batch_size=batch_size,
-                      n_captions=n_captions)
+                      sources_k=sources_k, batch_size=batch_size)
                 , prefix='test')
             , UserFunc(save_function, after_epoch=True)
             , UserFunc(rank_function, after_epoch=True)
@@ -343,10 +389,6 @@ def trainend2end(
         trX.extend(sbuX)
         trY.extend(sbuY)
 
-
-    # # needed to do the vectorize fitting
-    # prestream = DataETL.getTokenizedStream(trX, trY, sources=sources,
-    #     batch_size=batch_size, n_captions=n_captions)
 
     image_vects = T.matrix(sources[0])
     word_tokens = T.lmatrix(sources[1])
@@ -388,18 +430,18 @@ def trainend2end(
     main_loop = MainLoop(
           model=model
         , data_stream=DataETL.getTokenizedStream(trX, trY, sources=sources,
-            batch_size=batch_size, n_captions=n_captions)
+            batch_size=batch_size)
         , algorithm=algorithm
         , extensions=[
               DataStreamMonitoring(
                     [cost]
                   , DataETL.getTokenizedStream(trX, trY, sources=sources,
-                      batch_size=batch_size, n_captions=n_captions)
+                      batch_size=batch_size)
                   , prefix='train')
             , DataStreamMonitoring(
                     [cost]
                   , DataETL.getTokenizedStream(teX, teY, sources=sources,
-                      batch_size=batch_size, n_captions=n_captions)
+                      batch_size=batch_size)
                   , prefix='test')
             , Printing()
             , UserFunc(save_f_gen, after_epoch=True)
@@ -468,7 +510,7 @@ def traindecoder(
     # # # # # # # # # # #
 
     stream = DataETL.getFinalStream(trX, trY, sources=sources, sources_k=sources_k,
-            batch_size=batch_size, n_captions=n_captions)
+            batch_size=batch_size)
     batch = stream.get_epoch_iterator().next()
     f_emb = ModelIO.load('/home/luke/datasets/coco/predict/fullencoder_maxfeatures.50000')
     import ipdb
@@ -879,6 +921,6 @@ if __name__ == '__main__':
 
     # foo()
     # traindecoder()
-    trainencoder(n_sbu=None)
+    # trainencoder(n_sbu=100000)
     # trainend2end(batch_size=100, embedding_dim=300, mode='sample', n_sbu=100000, recurrent_unit='lstm')
     # sampleend2end(n_attempts=20, mode='sample')
