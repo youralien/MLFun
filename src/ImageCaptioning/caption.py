@@ -72,6 +72,16 @@ def sampleCaptions(ymb, K=1):
         sampled_captions.extend(py_rng.sample(captions_of_an_img, K))
     return sampled_captions
 
+def concatCaptions(ymb, K=5):
+    """ymb = minibatch of captions
+    it concatenates the first K captions from the available list of n captions.
+    While destorying some sentence order when concatenating, this is
+    helpful when we want the presence of a token"""
+    
+    def joinListOfCaptions(listOfCaptions):
+        return " ".join(listOfCaptions[:K])
+    return map(joinListOfCaptions, ymb)
+
 def prepVect(min_df=2, max_features=50000, n_captions=5, n_sbu=None,
              multilabel=False):
     print "prepping the Word Tokenizer..."
@@ -89,7 +99,7 @@ def prepVect(min_df=2, max_features=50000, n_captions=5, n_sbu=None,
     # if not multilabel:
     return vect
 
-dataset_name = 'coco_sbu'
+dataset_name = 'coco_train2014'
 
 # global vectorizer
 vect_name = 'tokenizer_%s' % dataset_name
@@ -220,7 +230,7 @@ class DataETL():
 
         # Transforms
         trXt=lambda x: floatX(x)
-        Yt=lambda y: intX(mlb.transform(vect.transform(sampleCaptions(y))))
+        Yt=lambda y: intX(mlb.transform(vect.transform(concatCaptions(y))))
 
         # Foxhound Iterators
         train_iterator = iterators.Linear(
@@ -719,6 +729,37 @@ class ModelEval():
         return image_annotation, image_search
 
     @staticmethod
+    def ImageSearchSingleCategory(ims, mlb_matrix, captions, category_key, thresh):
+        """do a single category, like dog"""
+        # project images
+        for i in range(len(ims)):
+            ims[i] /= np.linalg.norm(ims[i])
+        
+        # project single captions
+        for i in range(len(captions)):
+            captions[i] /= np.linalg.norm(captions[i])
+
+        assert captions.shape[0] == 1
+
+        sims = np.dot(captions, ims.T).flatten()
+        
+        found = []
+        n_found = 0
+        n_matches = 0
+        for i in range(len(sims)):
+            if sims[i] > thresh:
+                n_found += 1
+                found.append((i, sims[i]))
+
+                # depends on category_key being a single integer
+                if mlb_matrix[i][category_key]:
+                    n_matches += 1
+
+        print "n_found: ", n_found
+        print "n_matches: ", n_matches
+        return found
+
+    @staticmethod
     def getRelevantCaptions(im_emb, s_emb, image_fns, caption_strings, top_n, z=1, npts=None):
         """
         parameters
@@ -881,7 +922,6 @@ class ModelEval():
                 if savepath:
                     dict2json(generated_captions, savepath, cls=DecimalEncoder)
                 return
-
 
 if __name__ == '__main__':
     def test_samplerankcaptions():
