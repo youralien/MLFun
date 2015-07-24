@@ -18,7 +18,7 @@ from blocks.graph import ComputationGraph
 # blocks model training
 from blocks.main_loop import MainLoop
 from blocks.model import Model
-from blocks.algorithms import GradientDescent, Adam
+from blocks.algorithms import GradientDescent, Adam, AdaDelta
 from blocks.extensions.monitoring import DataStreamMonitoring
 from blocks.extensions import Printing
 from blocks.extensions.stopping import FinishIfNoImprovementAfter
@@ -320,7 +320,7 @@ def trainencoder(
         sbuname = "sbu.%d" % n_sbu
     else:
         sbuname = ''
-    name = "%s+coco_encoder_lstm_dim.%s" % (sbuname, embedding_dim)
+    name = "%s+coco_encoder_lstm_dim.%s_adadelta" % (sbuname, embedding_dim)
     savename = '/home/luke/datasets/coco/predict/%s' % name
 
     def save_function(self):
@@ -330,7 +330,7 @@ def trainencoder(
     def rank_function(self):
         # Get 1000 images / captions to test rank
         stream = DataETL.getFinalStream(teX, teY, sources=sources,
-                            sources_k=sources_k, batch_size=1000,
+                            sources_k=sources_k, batch_size=1000,   
                             shuffle=True)
         
         images, captions, _0, _1 = stream.get_epoch_iterator().next()
@@ -346,7 +346,8 @@ def trainencoder(
     algorithm = GradientDescent(
           cost=cost
         , parameters=cg.parameters
-        , step_rule=Adam(learning_rate=0.0002)
+        # , step_rule=Adam(learning_rate=0.0002)
+        , step_rule=AdaDelta()
         )
     main_loop = MainLoop(
           model=Model(cost)
@@ -959,6 +960,93 @@ if __name__ == '__main__':
 
         ModelEval.rankcaptions(test_fns)
 
+    def rank_function(self=None):
+        """
+        Results
+        --------
+        using first 1000 images from coco val2014
+        --------
+        encoder_name = 'fullencoder_maxfeatures.50000_epochsampler'
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Annotation   15.4   45.9    62.2      6
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Search       14.3   42.3    60.9      7
+
+        encoder_name = 'fullencoder_maxfeatures.50000'
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Annotation   13.1   43.7    60.2      7
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Search         12   39.3    57.4      8
+
+        encoder_name = 'sbu.100000+coco_encoder_lstm_dim.300_adadelta'
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Annotation   13.2   41.9    59.2      7
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Search       14.4   39.4    58.7      8
+
+        encoder_name = 'sbu.100000+coco_encoder_lstm_dim.300'
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Annotation     13   40.2    56.9      8
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Search       11.4   34.8    53.3     10
+
+        encoder_name = '+coco_encoder_lstm_dim.300'
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Annotation   11.6     41    58.5      8
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Search       10.9   38.3    54.5      9
+
+        -------
+        using first 10000 images from coco val2014
+        -------
+        encoder_name = 'fullencoder_maxfeatures.50000_epochsampler'
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Annotation   2.69   9.72   16.46     65
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Search       2.44   8.86   15.03     71
+
+        encoder_name = 'fullencoder_maxfeatures.50000'
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Annotation   2.41   8.83    14.4     75
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Search       1.86   7.49   12.64     84
+
+        encoder_name = 'sbu.100000+coco_encoder_lstm_dim.300_adadelta'
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Annotation   2.01    8.5   14.23     79
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Search       2.06   7.74   13.47     80
+
+        encoder_name = 'sbu.100000+coco_encoder_lstm_dim.300'
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Annotation   1.45   5.78   10.03    105
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Search       1.37   5.33    9.65    113
+
+        encoder_name = '+coco_encoder_lstm_dim.300'
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Annotation   0.99   4.83    9.14    103
+                          R @ 1  R @ 5  R @ 10  Med R
+        Image Search       1.16   5.02     8.7    109
+
+        """
+        teX, teY, _ = cocoXYFilenames(n_captions=5)
+        sources = ('X', 'Y')
+        sources_k = ('X_k', 'Y_k')
+        stream = DataETL.getFinalStream(teX, teY, sources=sources,
+                            sources_k=sources_k, batch_size=1000,
+                            shuffle=False)
+        images, captions, _0, _1 = stream.get_epoch_iterator().next()
+
+        predict_dir = '/home/luke/datasets/coco/predict/'
+        # encoder_name = '+coco_encoder_lstm_dim.300'
+        encoder_name = 'sbu.100000+coco_encoder_lstm_dim.300_adadelta'
+        # encoder_name = 'fullencoder_maxfeatures.50000_epochsampler'
+        f_emb = ModelIO.load(predict_dir + encoder_name)
+        image_embs, caption_embs = f_emb(images, captions)
+        ModelEval.ImageSentenceRanking(image_embs, caption_embs)
+
+    rank_function()
     # foo()
     # traindecoder()
     # trainencoder(n_sbu=100000)
